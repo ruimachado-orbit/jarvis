@@ -15,5 +15,10 @@ voices/
 *.onnx
 *.onnx.json
 models/
+.jarvis/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
 .vscode/
 .idea/

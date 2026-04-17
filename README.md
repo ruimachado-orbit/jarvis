@@ -111,6 +111,26 @@ If openWakeWord is not installed, the voice loop still works — set `JARVIS_REQ
 
 `JARVIS_STREAM_VOICE=true` (default) runs the LLM and TTS as a pipeline: sentences are synthesised the moment they come off the model, while playback drains them in order. The first audio usually arrives before the full response is written. Override per-run with `jarvis voice --no-stream`.
 
+## Long-term memory
+
+Jarvis keeps two tiers of memory in a single SQLite file (`./.jarvis/memory.db` by default):
+
+1. **Episodic log** — every user message, assistant reply, and tool result is appended row-by-row. Nothing is summarised at write time; this is the raw record.
+2. **Distilled profile** — every `JARVIS_MEMORY_REFRESH_EVERY` user turns, a background task feeds the recent episodes to the LLM with a note-taking prompt and stores a short (≤1 KB) bullet list of durable facts: preferred languages, style, projects, things you like or dislike. The latest profile is folded into the system prompt so every future reply benefits from it.
+
+The distillation prompt explicitly forbids fabrication. If nothing durable is learned the store records `(no durable facts yet)` and moves on.
+
+Controls:
+
+```bash
+make memory-show       # jarvis memory show      — profile + last 10 episodes
+make memory-refresh    # jarvis memory refresh   — force a distillation now
+make memory-reset      # jarvis memory reset     — wipe everything (prompts first)
+jarvis memory export --limit 1000 -o session.jsonl
+```
+
+Disable entirely with `JARVIS_MEMORY_ENABLED=false`. Point `JARVIS_MEMORY_DB` at a per-workspace path if you want project-scoped memory.
+
 ## Safety defaults
 
 `read_file`, `list_dir`, `grep` are always on. `write_file` and `run_shell` are disabled until `JARVIS_ALLOW_WRITES=true` / `JARVIS_ALLOW_SHELL=true`. Paths resolve against `JARVIS_WORKSPACE` and escapes are rejected.
@@ -123,7 +143,8 @@ jarvis/
 ├── audio.py          # VAD-gated recording, serial playback
 ├── config.py         # pydantic settings (env-backed)
 ├── llm.py            # OpenAI-compatible vLLM client (stream + tools)
-├── main.py           # typer CLI: voice | chat | ask | telegram | notify | watch
+├── main.py           # typer CLI: voice | chat | ask | telegram | notify | watch | memory
+├── memory.py         # SQLite episodic log + LLM-distilled user profile
 ├── personality.py    # Jarvis system prompt (TTS-friendly)
 ├── streaming.py      # SentenceSplitter + speak_stream pipeline
 ├── stt.py            # faster-whisper transcriber

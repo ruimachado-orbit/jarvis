@@ -24,9 +24,12 @@ from rich.prompt import Prompt
 from jarvis.agent import Agent
 from jarvis.config import get_settings
 from jarvis.llm import LLMClient
+from jarvis.memory import Memory, distill_profile
 from jarvis.tools import Toolbox
 
 app = typer.Typer(add_completion=False, help="Jarvis — voice-first local coding assistant.")
+memory_app = typer.Typer(add_completion=False, help="Inspect and manage long-term memory.")
+app.add_typer(memory_app, name="memory")
 console = Console()
 log = logging.getLogger("jarvis")
 
@@ -43,7 +46,8 @@ def _build_agent() -> Agent:
     settings = get_settings()
     llm = LLMClient(settings)
     tools = Toolbox(settings)
-    return Agent(settings, llm, tools)
+    memory = Memory(settings.memory_db, enabled=settings.memory_enabled)
+    return Agent(settings, llm, tools, memory=memory)
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> None:
@@ -331,6 +335,122 @@ async def _watch_main(
         pass
     finally:
         await bridge.stop()
+
+
+# ----- memory subcommands -----
+
+def _build_memory() -> Memory:
+    settings = get_settings()
+    return Memory(settings.memory_db, enabled=settings.memory_enabled)
+
+
+@memory_app.command("show")
+def memory_show(
+    tail: int = typer.Option(10, "--tail", help="Show the last N episodes."),
+) -> None:
+    """Print the current distilled profile and recent episodes."""
+    mem = _build_memory()
+    if not mem.enabled:
+        console.print("[yellow]Memory is disabled (JARVIS_MEMORY_ENABLED=false).[/]")
+        raise typer.Exit()
+
+    stats = mem.stats()
+    profile, covered = mem.current_profile()
+
+    console.rule("[bold]Memory status[/bold]")
+    console.print(f"db: [dim]{stats['db_path']}[/dim]")
+    console.print(
+        f"sessions: {stats['sessions']}  "
+        f"profiles: {stats['profile_versions']}  "
+        f"turns: {stats.get('turns_by_role', {})}"
+    )
+    console.rule("[bold]Current profile[/bold]")
+    if profile:
+        console.print(profile)
+        console.print(f"[dim]covered through episode {covered}[/dim]")
+    else:
+        console.print("[dim](no profile yet — it will be distilled after a few turns)[/dim]")
+
+    if tail > 0:
+        console.rule(f"[bold]Last {tail} episodes[/bold]")
+        for e in mem.recent_episodes(limit=tail):
+            content = (e.content or "").strip().replace("\n", " ")
+            if len(content) > 140:
+                content = content[:140] + "…"
+            tag = e.tool_name or e.role
+            console.print(f"[dim]{e.id:>4}[/dim]  [cyan]{tag:<10}[/cyan]  {content}")
+
+
+@memory_app.command("refresh")
+def memory_refresh(verbose: bool = typer.Option(False, "--verbose", "-v")) -> None:
+    """Force an immediate profile distillation using recent episodes."""
+    _setup_logging(verbose)
+    asyncio.run(_memory_refresh_main())
+
+
+async def _memory_refresh_main() -> None:
+    settings = get_settings()
+    mem = Memory(settings.memory_db, enabled=settings.memory_enabled)
+    if not mem.enabled:
+        console.print("[yellow]Memory is disabled.[/]")
+        return
+    llm = LLMClient(settings)
+    console.print("[dim]distilling profile...[/dim]")
+    profile = await distill_profile(mem, llm, context_turns=settings.memory_context_turns)
+    console.rule("[bold]New profile[/bold]")
+    console.print(profile or "[dim](no durable facts yet)[/dim]")
+
+
+@memory_app.command("reset")
+def memory_reset(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Wipe every episode and profile from the memory store."""
+    mem = _build_memory()
+    if not mem.enabled:
+        console.print("[yellow]Memory is disabled — nothing to reset.[/]")
+        raise typer.Exit()
+    if not yes:
+        confirm = Prompt.ask(
+            f"Delete everything in {mem.db_path}? This cannot be undone. Type 'yes'",
+            default="no",
+        )
+        if confirm.strip().lower() != "yes":
+            console.print("aborted")
+            raise typer.Exit(code=1)
+    mem.reset()
+    console.print("[green]memory cleared[/]")
+
+
+@memory_app.command("export")
+def memory_export(
+    limit: int = typer.Option(500, "--limit", help="Number of episodes to export."),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file (default: stdout)."),
+) -> None:
+    """Export recent episodes as JSON lines."""
+    import json as _json
+
+    mem = _build_memory()
+    if not mem.enabled:
+        console.print("[yellow]Memory is disabled.[/]")
+        raise typer.Exit()
+    episodes = mem.recent_episodes(limit=limit)
+    lines = []
+    for e in episodes:
+        lines.append(_json.dumps({
+            "id": e.id,
+            "ts": e.ts,
+            "role": e.role,
+            "content": e.content,
+            "tool_name": e.tool_name,
+        }))
+    payload = "\n".join(lines) + "\n"
+    if output:
+        from pathlib import Path as _Path
+        _Path(output).write_text(payload, encoding="utf-8")
+        console.print(f"wrote {len(lines)} episodes to [cyan]{output}[/cyan]")
+    else:
+        print(payload, end="")
 
 
 if __name__ == "__main__":

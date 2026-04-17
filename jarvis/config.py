@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     watch_command: str | None = None
     watch_debounce_ms: int = 400
 
+    memory_enabled: bool = True
+    memory_db: Path = Path("./.jarvis/memory.db")
+    memory_refresh_every: int = 10
+    memory_context_turns: int = 60
+
     @property
     def allowed_chat_ids(self) -> set[int]:
         raw = [c.strip() for c in self.telegram_allowed_chats.split(",") if c.strip()]

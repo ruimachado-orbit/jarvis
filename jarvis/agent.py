@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 from jarvis.config import Settings
 from jarvis.llm import LLMClient, parse_tool_args
+from jarvis.memory import Memory, distill_profile, format_profile_block
 from jarvis.personality import SYSTEM_PROMPT
 from jarvis.streaming import SentenceSplitter, stream_sentences
 from jarvis.tools import TOOL_SCHEMAS, Toolbox
@@ -20,28 +22,58 @@ MAX_TURNS = 6
 
 
 class Agent:
-    """A thin multi-turn orchestrator with tool calls.
+    """A thin multi-turn orchestrator with tool calls and persistent memory.
 
-    It keeps a rolling message history per session. Tool calls run in a silent inner
-    loop; only the final assistant text is yielded for speech.
+    State:
+    - ``_messages``: in-memory conversation for the current session.
+    - ``memory``: SQLite-backed episodic log plus a distilled user profile that
+      is folded into the system prompt.
+
+    After every assistant turn, each message (user, assistant, tool result) is
+    appended to the episodic log. The profile is refreshed in a background
+    task once the user has spoken ``settings.memory_refresh_every`` times
+    since the last refresh.
     """
 
-    def __init__(self, settings: Settings, llm: LLMClient, tools: Toolbox) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        llm: LLMClient,
+        tools: Toolbox,
+        memory: Memory | None = None,
+    ) -> None:
         self.settings = settings
         self.llm = llm
         self.tools = tools
-        self._messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.memory = memory or Memory(settings.memory_db, enabled=False)
+        self._refresh_task: asyncio.Task | None = None
+        self._messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._build_system_prompt()}
+        ]
+
+    # ----- prompt / memory plumbing -----
+
+    def _build_system_prompt(self) -> str:
+        profile, _ = self.memory.current_profile()
+        return SYSTEM_PROMPT + format_profile_block(profile)
+
+    def reload_profile(self) -> None:
+        """Rebuild the system prompt from the latest stored profile."""
+        self._messages[0] = {"role": "system", "content": self._build_system_prompt()}
 
     def reset(self) -> None:
-        self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        """Clear in-memory chat. Does not touch the persistent memory."""
+        self._messages = [{"role": "system", "content": self._build_system_prompt()}]
 
     @property
     def history(self) -> list[dict[str, Any]]:
         return list(self._messages)
 
+    # ----- public API -----
+
     async def respond(self, user_text: str) -> str:
-        """Append user input, run tool-calling loop, return final assistant text."""
         self._messages.append({"role": "user", "content": user_text})
+        self.memory.log("user", user_text)
 
         for _ in range(MAX_TURNS):
             message = await self.llm.complete(self._messages, tools=TOOL_SCHEMAS)
@@ -49,23 +81,19 @@ class Agent:
 
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                return (message.get("content") or "").strip()
+                text = (message.get("content") or "").strip()
+                self.memory.log("assistant", text)
+                self._schedule_refresh()
+                return text
 
+            self.memory.log(
+                "assistant",
+                message.get("content") or "",
+                metadata={"tool_calls": [tc["function"]["name"] for tc in tool_calls]},
+            )
             for call in tool_calls:
-                name = call["function"]["name"]
-                args = parse_tool_args(call["function"]["arguments"])
-                log.info("tool call %s %s", name, args)
-                result = await self.tools.dispatch(name, args)
-                self._messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call["id"],
-                        "name": name,
-                        "content": result,
-                    }
-                )
+                await self._dispatch_and_log(call)
 
-        # Loop cap hit; ask the model for a plain summary with no more tools.
         final = await self.llm.complete(
             self._messages
             + [
@@ -76,11 +104,15 @@ class Agent:
             ]
         )
         self._messages.append(final)
-        return (final.get("content") or "").strip()
+        text = (final.get("content") or "").strip()
+        self.memory.log("assistant", text, metadata={"capped": True})
+        self._schedule_refresh()
+        return text
 
     async def respond_stream(self, user_text: str) -> AsyncIterator[str]:
         """Same loop as ``respond`` but yields sentences as the final turn streams."""
         self._messages.append({"role": "user", "content": user_text})
+        self.memory.log("user", user_text)
 
         for _ in range(MAX_TURNS):
             content_acc = ""
@@ -106,21 +138,17 @@ class Agent:
                 tail = splitter.flush()
                 if tail:
                     yield tail
+                self.memory.log("assistant", content_acc.strip())
+                self._schedule_refresh()
                 return
 
+            self.memory.log(
+                "assistant",
+                content_acc,
+                metadata={"tool_calls": [tc["function"]["name"] for tc in tool_calls]},
+            )
             for call in tool_calls:
-                name = call["function"]["name"]
-                args = parse_tool_args(call["function"]["arguments"])
-                log.info("tool call %s %s", name, args)
-                result = await self.tools.dispatch(name, args)
-                self._messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call["id"],
-                        "name": name,
-                        "content": result,
-                    }
-                )
+                await self._dispatch_and_log(call)
 
         final = await self.llm.complete(
             self._messages
@@ -133,6 +161,8 @@ class Agent:
         )
         self._messages.append(final)
         text = (final.get("content") or "").strip()
+        self.memory.log("assistant", text, metadata={"capped": True})
+        self._schedule_refresh()
         if text:
             splitter = SentenceSplitter()
             for sentence in splitter.feed(text):
@@ -141,4 +171,49 @@ class Agent:
             if tail:
                 yield tail
 
+    # ----- internals -----
 
+    async def _dispatch_and_log(self, call: dict[str, Any]) -> None:
+        name = call["function"]["name"]
+        args = parse_tool_args(call["function"]["arguments"])
+        log.info("tool call %s %s", name, args)
+        result = await self.tools.dispatch(name, args)
+        self._messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "name": name,
+                "content": result,
+            }
+        )
+        self.memory.log(
+            "tool",
+            result,
+            tool_name=name,
+            tool_call_id=call["id"],
+            metadata={"args": args},
+        )
+
+    def _schedule_refresh(self) -> None:
+        if not self.memory.enabled:
+            return
+        _, covered = self.memory.current_profile()
+        if self.memory.user_turns_since(covered) < self.settings.memory_refresh_every:
+            return
+        if self._refresh_task and not self._refresh_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        log.info("kicking off background profile refresh")
+        self._refresh_task = loop.create_task(self._refresh_profile())
+
+    async def _refresh_profile(self) -> None:
+        try:
+            await distill_profile(
+                self.memory, self.llm, context_turns=self.settings.memory_context_turns
+            )
+            self.reload_profile()
+        except Exception as e:
+            log.warning("background profile refresh failed: %s", e)

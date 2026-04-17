@@ -17,7 +17,7 @@ VLLM_WAIT ?= 300
 # Activate the venv implicitly by prepending its bin to PATH for every recipe.
 export PATH := $(VENV)/bin:$(PATH)
 
-.PHONY: help install init env voice-model vllm wait-vllm voice chat ask telegram notify watch test lint clean dev
+.PHONY: help install init env voice-model vllm wait-vllm voice chat ask telegram notify watch test lint clean dev memory-show memory-refresh memory-reset
 
 help:
 	@echo "Common targets:"
@@ -30,6 +30,9 @@ help:
 	@echo "  make telegram    run only the Telegram bridge"
 	@echo "  make watch       watch workspace and notify Telegram on changes"
 	@echo "  make notify M=.. push a message to the notify chat"
+	@echo "  make memory-show      show profile + recent episodes"
+	@echo "  make memory-refresh   force profile distillation now"
+	@echo "  make memory-reset     wipe the memory DB (asks to confirm)"
 	@echo "  make test        run pytest"
 
 # ----- setup -----
@@ -88,6 +91,15 @@ notify:
 
 watch:
 	jarvis watch
+
+memory-show:
+	jarvis memory show
+
+memory-refresh:
+	jarvis memory refresh
+
+memory-reset:
+	jarvis memory reset
 
 test:
 	pytest -q

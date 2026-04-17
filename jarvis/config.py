@@ -45,8 +45,17 @@ class Settings(BaseSettings):
     telegram_allowed_chats: str = ""
     telegram_notify_chat: str | None = None
 
-    wake_word: str = "jarvis"
+    wake_word: str = "hey jarvis"
     require_wake_word: bool = False
+    wake_enabled: bool = True
+    wake_model: str = "hey_jarvis_v0.1"
+    wake_threshold: float = 0.5
+
+    stream_voice: bool = True
+
+    watch_paths: str = "."
+    watch_command: str | None = None
+    watch_debounce_ms: int = 400
 
     @property
     def allowed_chat_ids(self) -> set[int]:
@@ -56,6 +65,10 @@ class Settings(BaseSettings):
     @property
     def notify_chat_id(self) -> int | None:
         return int(self.telegram_notify_chat) if self.telegram_notify_chat else None
+
+    @property
+    def watch_path_list(self) -> list[str]:
+        return [p.strip() for p in self.watch_paths.split(",") if p.strip()]
 
 
 _settings: Settings | None = None

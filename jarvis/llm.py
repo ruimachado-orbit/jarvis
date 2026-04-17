@@ -74,6 +74,65 @@ class LLMClient:
             if delta and delta.content:
                 yield delta.content
 
+    async def stream_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream one assistant turn while capturing tool-call deltas.
+
+        Yields ``{"type": "text", "delta": str}`` events during content tokens
+        and a final ``{"type": "done", "content": str, "tool_calls": [...]}``
+        event once the stream closes.
+        """
+        kwargs: dict[str, Any] = {
+            "model": self._settings.llm_model,
+            "messages": messages,
+            "temperature": self._settings.llm_temperature,
+            "max_tokens": self._settings.llm_max_tokens,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+
+        stream = await self._client.chat.completions.create(**kwargs)
+        content_acc = ""
+        tc_by_index: dict[int, dict[str, str]] = {}
+
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta is None:
+                continue
+            if delta.content:
+                content_acc += delta.content
+                yield {"type": "text", "delta": delta.content}
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    slot = tc_by_index.setdefault(
+                        tc.index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if tc.id:
+                        slot["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            slot["name"] += tc.function.name
+                        if tc.function.arguments:
+                            slot["arguments"] += tc.function.arguments
+
+        tool_calls = [
+            {
+                "id": slot["id"] or f"call_{i}",
+                "type": "function",
+                "function": {"name": slot["name"], "arguments": slot["arguments"]},
+            }
+            for i, slot in sorted(tc_by_index.items())
+        ]
+        yield {"type": "done", "content": content_acc, "tool_calls": tool_calls}
+
 
 def parse_tool_args(raw: str) -> dict[str, Any]:
     if not raw:

@@ -50,7 +50,14 @@
       "Bash(python -m pytest tests/ -v --ignore=tests/test_memory.py --ignore=tests/test_tools_safety.py --ignore=tests/test_streaming_pipeline.py --ignore=tests/test_agent_streaming.py)",
       "Bash(make -C /Users/ruimachado/Code/jarvis test)",
       "Bash(python -m pytest tests/test_main_cli.py -v)",
-      "Bash(make test *)"
+      "Bash(make test *)",
+      "Bash(python -m pytest tests/ -v --tb=short --ignore=tests/test_memory.py --ignore=tests/test_tools_safety.py --ignore=tests/test_streaming_pipeline.py --ignore=tests/test_agent_streaming.py -x)",
+      "Bash(python -c \"from jarvis.telegram_bot import TelegramBridge\")",
+      "Bash(python -c \"from mem0 import Memory; m = Memory\\(\\)\")",
+      "Bash(python -c \"from mem0 import Memory; help\\(Memory.__init__\\)\")",
+      "Bash(python -c \"import fastembed\")",
+      "Bash(python -c \"from sentence_transformers import SentenceTransformer\")",
+      "Bash(pip install *)"
     ],
     "additionalDirectories": [
       "/tmp"

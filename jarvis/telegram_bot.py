@@ -21,7 +21,7 @@ from telegram.ext import (
     filters,
 )
 
-from jarvis.config import Settings
+from jarvis.core.config import Settings
 
 log = logging.getLogger(__name__)
 

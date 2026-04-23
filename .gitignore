@@ -16,6 +16,7 @@ voices/
 *.onnx.json
 models/
 .jarvis/
+.claude/
 *.db
 *.db-journal
 *.db-wal

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,8 +54,8 @@ class Settings(BaseSettings):
     stream_voice: bool = True
 
     # Google
-    google_credentials_path: Path = Path("~/.jarvis/credentials.json")
-    google_token_path: Path = Path("~/.jarvis/google_token.json")
+    google_credentials: Path = Path("~/.jarvis/credentials.json")
+    google_token: Path = Path("~/.jarvis/google_token.json")
 
     # Web search
     brave_api_key: str = ""
@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     watch_paths: str = "."
     watch_command: str | None = None
     watch_debounce_ms: int = 400
+
+    @field_validator("google_credentials", "google_token", "mem0_path", "workspace", mode="before")
+    @classmethod
+    def expand_path(cls, v: object) -> object:
+        if v:
+            return Path(str(v)).expanduser()
+        return v
 
     @property
     def allowed_chat_ids(self) -> set[int]:

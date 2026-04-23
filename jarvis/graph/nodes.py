@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
-import anthropic
-
-from jarvis.core.config import Settings
 from jarvis.core.personality import SYSTEM_PROMPT
 from jarvis.graph.state import AgentState
-from jarvis.tools.registry import TOOL_SCHEMAS
 
 if TYPE_CHECKING:
     from jarvis.memory.mem0_store import Mem0Store
@@ -22,6 +20,8 @@ log = logging.getLogger(__name__)
 MAX_TURNS = 6
 
 CONFIRMATION_REQUIRED_TOOLS = {"write_file", "run_shell", "create_event", "update_event", "send_email"}
+
+TOOL_CALL_RE = re.compile(r"```tool_call\s*\n(.*?)\n```", re.DOTALL)
 
 
 def retrieve_memory_node(state: AgentState, mem0_store: Mem0Store | None) -> dict[str, Any]:
@@ -43,85 +43,166 @@ def _build_system_with_memories(memories: list[str]) -> str:
     return SYSTEM_PROMPT + block
 
 
-def _openai_schemas_to_anthropic(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert OpenAI-style tool schemas to Anthropic format."""
-    tools = []
-    for t in schemas:
-        fn = t["function"]
-        tools.append({
-            "name": fn["name"],
-            "description": fn.get("description", ""),
-            "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
-        })
-    return tools
+def _build_claude_prompt(system: str, messages: list[dict]) -> str:
+    """Convert message history to a single prompt string for claude -p."""
+    parts = [f"<system>\n{system}\n</system>\n"]
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        text_parts.append(block["text"])
+                    elif block.get("type") == "tool_result":
+                        text_parts.append(f"[Tool result for {block.get('tool_use_id','?')}]: {block.get('content','')}")
+                    elif block.get("type") == "tool_use":
+                        text_parts.append(f"[Tool call {block.get('name','?')}]: {json.dumps(block.get('input',{}))}")
+            content = "\n".join(text_parts)
+        parts.append(f"<{role}>\n{content}\n</{role}>")
+    return "\n".join(parts)
 
 
-async def think_node(
-    state: AgentState,
-    client: anthropic.AsyncAnthropic,
-    settings: Settings,
-) -> dict[str, Any]:
-    system = _build_system_with_memories(state["memories"])
-
-    # Build messages in Anthropic format (skip system messages)
-    messages = [m for m in state["messages"] if m.get("role") != "system"]
-
-    tools = _openai_schemas_to_anthropic(TOOL_SCHEMAS)
-
-    response = await client.messages.create(
-        model=settings.llm_model,
-        max_tokens=settings.llm_max_tokens,
-        system=system,
-        messages=messages,
-        tools=tools,
+async def _run_claude(prompt: str, model: str) -> str:
+    """Run claude -p and return stdout."""
+    proc = await asyncio.create_subprocess_exec(
+        "claude", "-p", prompt,
+        "--model", model,
+        "--output-format", "text",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = stderr.decode().strip()
+        raise RuntimeError(f"claude -p failed (rc={proc.returncode}): {err}")
+    return stdout.decode().strip()
 
-    tool_calls = []
-    text_content = ""
-    content_blocks = []
-    for block in response.content:
-        if block.type == "text":
-            text_content += block.text
-            content_blocks.append({"type": "text", "text": block.text})
-        elif block.type == "tool_use":
-            tool_calls.append({
-                "id": block.id,
-                "name": block.name,
-                "args": block.input,
-            })
-            content_blocks.append({
-                "type": "tool_use",
-                "id": block.id,
-                "name": block.name,
-                "input": block.input,
-            })
 
-    # Build assistant message in Anthropic format (content is list of blocks)
-    new_messages = list(state["messages"])
-    new_messages.append({
-        "role": "assistant",
-        "content": content_blocks,
-    })
+async def think_node(state: AgentState) -> dict[str, Any]:
+    settings = state.get("settings")
+    toolbox: Toolbox | None = state.get("toolbox")
 
-    requires_confirmation = any(tc["name"] in CONFIRMATION_REQUIRED_TOOLS for tc in tool_calls)
-    pending_action = tool_calls[0] if requires_confirmation and tool_calls else None
+    if settings is not None and hasattr(settings, "llm_model"):
+        model = settings.llm_model
+    else:
+        model = "claude-sonnet-4-6"
 
+    memories = state.get("memories", [])
+    system = _build_system_with_memories(memories)
+
+    tool_descriptions = ""
+    if toolbox:
+        lines = []
+        for schema in toolbox.schemas:
+            name = schema["name"]
+            desc = schema.get("description", "")
+            props = schema.get("input_schema", {}).get("properties", {})
+            params = ", ".join(f"{k}: {v.get('type','any')}" for k, v in props.items())
+            lines.append(f"- {name}({params}): {desc}")
+        tool_descriptions = "\n\nAvailable tools:\n" + "\n".join(lines)
+        tool_descriptions += (
+            "\n\nTo call a tool output EXACTLY:\n```tool_call\n{\"name\": \"tool_name\", \"input\": {...}}\n```"
+        )
+
+    system = system + tool_descriptions
+
+    messages = [m for m in state.get("messages", []) if m.get("role") != "system"]
+    turns = 0
+    response_text = ""
+    clean_response = ""
+
+    while turns < MAX_TURNS:
+        turns += 1
+        prompt = _build_claude_prompt(system, messages)
+        try:
+            response_text = await _run_claude(prompt, model)
+        except Exception as e:
+            log.error("claude -p error: %s", e)
+            return {**state, "final_response": f"Sorry, I encountered an error: {e}", "error": str(e)}
+
+        tool_calls_raw = TOOL_CALL_RE.findall(response_text)
+        clean_response = TOOL_CALL_RE.sub("", response_text).strip()
+
+        if not tool_calls_raw:
+            messages.append({"role": "assistant", "content": response_text})
+            return {
+                **state,
+                "messages": messages,
+                "tool_calls": [],
+                "requires_confirmation": False,
+                "pending_action": None,
+                "final_response": clean_response or response_text,
+            }
+
+        tool_calls = []
+        for raw in tool_calls_raw:
+            try:
+                tc = json.loads(raw.strip())
+                tool_calls.append(tc)
+            except json.JSONDecodeError as e:
+                log.warning("Failed to parse tool call JSON: %s | %s", raw, e)
+
+        if not tool_calls:
+            messages.append({"role": "assistant", "content": response_text})
+            return {
+                **state,
+                "messages": messages,
+                "tool_calls": [],
+                "requires_confirmation": False,
+                "pending_action": None,
+                "final_response": clean_response or response_text,
+            }
+
+        needs_confirm = any(tc.get("name") in CONFIRMATION_REQUIRED_TOOLS for tc in tool_calls)
+        if needs_confirm and not state.get("_confirmed"):
+            action_desc = "; ".join(f"{tc['name']}({tc.get('input',{})})" for tc in tool_calls)
+            return {
+                **state,
+                "messages": messages,
+                "tool_calls": tool_calls,
+                "requires_confirmation": True,
+                "pending_action": {"tool_calls": tool_calls, "messages": messages},
+                "final_response": f"I'd like to: {action_desc}. Shall I proceed?",
+            }
+
+        messages.append({"role": "assistant", "content": response_text})
+        tool_results_text = []
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            inp = tc.get("input", {})
+            try:
+                if toolbox:
+                    result = await toolbox.dispatch(name, inp)
+                else:
+                    result = f"No toolbox available for {name}"
+            except Exception as e:
+                result = f"Error: {e}"
+            tool_results_text.append(f"[Result of {name}]: {result}")
+            log.info("Tool %s -> %s", name, str(result)[:120])
+
+        messages.append({"role": "user", "content": "\n".join(tool_results_text)})
+
+    final = clean_response or response_text or "I ran out of steps."
     return {
-        "messages": new_messages,
-        "tool_calls": tool_calls,
-        "requires_confirmation": requires_confirmation,
-        "pending_action": pending_action,
-        "final_response": text_content,
+        **state,
+        "messages": messages,
+        "tool_calls": [],
+        "requires_confirmation": False,
+        "pending_action": None,
+        "final_response": final,
     }
 
 
 async def act_node(state: AgentState, toolbox: Toolbox) -> dict[str, Any]:
     results = []
     for call in state["tool_calls"]:
-        result = await toolbox.dispatch(call["name"], call["args"])
-        results.append({"tool_use_id": call["id"], "content": result})
+        name = call.get("name", "")
+        args = call.get("args", call.get("input", {}))
+        result = await toolbox.dispatch(name, args)
+        results.append({"tool_use_id": call.get("id", name), "content": result})
 
-    # Tool results sent as user message with tool_result content blocks
     new_messages = list(state["messages"])
     new_messages.append({
         "role": "user",
@@ -139,9 +220,15 @@ def observe_node(state: AgentState) -> dict[str, Any]:
 def respond_node(state: AgentState) -> dict[str, Any]:
     if state.get("requires_confirmation") and state.get("pending_action"):
         action = state["pending_action"]
-        name = action.get("name", "action")
-        args_preview = json.dumps(action.get("args", {}))[:120]
-        msg = f"I'd like to run {name} with: {args_preview}. Shall I go ahead?"
+        # pending_action may be the new format {tool_calls, messages} or old {name, args}
+        if "name" in action:
+            name = action.get("name", "action")
+            args_preview = json.dumps(action.get("args", {}))[:120]
+            msg = f"I'd like to run {name} with: {args_preview}. Shall I go ahead?"
+        else:
+            tcs = action.get("tool_calls", [])
+            action_desc = "; ".join(f"{tc.get('name','?')}({tc.get('input',{})})" for tc in tcs)
+            msg = f"I'd like to: {action_desc}. Shall I proceed?"
         return {"final_response": msg}
 
     last_assistant = next(
@@ -153,7 +240,6 @@ def respond_node(state: AgentState) -> dict[str, Any]:
 
     content = last_assistant.get("content", "")
     if isinstance(content, list):
-        # Plain dicts from converted content blocks
         text = " ".join(
             b.get("text", "") if isinstance(b, dict) else (b.text if hasattr(b, "text") else "")
             for b in content

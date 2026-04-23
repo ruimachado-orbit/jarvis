@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-import anthropic
 from langgraph.graph import END, StateGraph
 
 from jarvis.core.config import Settings
@@ -21,7 +20,6 @@ log = logging.getLogger(__name__)
 
 def build_graph(
     settings: Settings,
-    client: anthropic.AsyncAnthropic,
     toolbox: Toolbox,
     mem0_store: Mem0Store | None,
 ):
@@ -29,7 +27,7 @@ def build_graph(
     graph = StateGraph(AgentState)
 
     graph.add_node("retrieve_memory", lambda s: nodes.retrieve_memory_node(s, mem0_store))
-    graph.add_node("think", lambda s: nodes.think_node(s, client, settings))
+    graph.add_node("think", nodes.think_node)
     graph.add_node("act", lambda s: nodes.act_node(s, toolbox))
     graph.add_node("observe", nodes.observe_node)
     graph.add_node("respond", nodes.respond_node)
@@ -73,6 +71,8 @@ async def run_turn(
     trigger: str = "voice",
     output_channel: str = "voice",
     conversation_history: list[dict[str, Any]] | None = None,
+    settings: Settings | None = None,
+    toolbox: Toolbox | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one turn. Returns (response_text, updated_history)."""
     history = list(conversation_history or [])
@@ -89,6 +89,8 @@ async def run_turn(
         "requires_confirmation": False,
         "pending_action": None,
         "error": None,
+        "settings": settings,
+        "toolbox": toolbox,
     }
 
     result = await compiled_graph.ainvoke(initial_state)

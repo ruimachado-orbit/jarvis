@@ -6,8 +6,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import anthropic
-
 from jarvis.core.config import Settings
 from jarvis.graph.agent import build_graph
 from jarvis.memory.mem0_store import Mem0Store
@@ -18,8 +16,6 @@ log = logging.getLogger(__name__)
 
 def build_session(settings: Settings) -> dict[str, Any]:
     """Build and return all shared runtime components."""
-    client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY from env
-
     mem0: Mem0Store | None = None
     if settings.mem0_enabled:
         mem0 = Mem0Store(
@@ -29,10 +25,9 @@ def build_session(settings: Settings) -> dict[str, Any]:
         )
 
     toolbox = Toolbox(settings, mem0_store=mem0)
-    graph = build_graph(settings, client, toolbox, mem0)
+    graph = build_graph(settings, toolbox, mem0)
 
     return {
-        "client": client,
         "mem0": mem0,
         "toolbox": toolbox,
         "graph": graph,

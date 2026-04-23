@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Read(//Users/ruimachado/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.7/skills/subagent-driven-development/**)",
+      "Bash(/Users/ruimachado/Code/jarvis/.venv/bin/pip install *)",
+      "Bash(/Users/ruimachado/Code/jarvis/.venv/bin/python -c \"import anthropic; import langgraph; import mem0; print\\('OK'\\)\")",
+      "Bash(/Users/ruimachado/Code/jarvis/.venv/bin/python)",
+      "Bash(cat)",
+      "Read(//tmp/**)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

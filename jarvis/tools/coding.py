@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-import shlex
 from pathlib import Path
-from typing import Any
 
 from jarvis.core.config import Settings
 
@@ -118,31 +116,10 @@ class Toolbox:
         )
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError as e:
+        except TimeoutError as e:
             proc.kill()
             raise ToolError(f"command timed out after {timeout}s") from e
         text = stdout.decode("utf-8", errors="replace")
         if len(text) > MAX_SHELL_OUTPUT:
             text = text[:MAX_SHELL_OUTPUT] + "\n... (truncated)"
         return f"[exit {proc.returncode}]\n{text}"
-
-    # ----- dispatch -----
-
-    async def dispatch(self, name: str, args: dict[str, Any]) -> str:
-        try:
-            if name == "read_file":
-                return self.read_file(**args)
-            if name == "list_dir":
-                return self.list_dir(**args)
-            if name == "grep":
-                return self.grep(**args)
-            if name == "write_file":
-                return self.write_file(**args)
-            if name == "run_shell":
-                return await self.run_shell(**args)
-            raise ToolError(f"unknown tool {name!r}")
-        except ToolError as e:
-            return f"ERROR: {e}"
-        except TypeError as e:
-            return f"ERROR: bad arguments for {name}: {e}"
-

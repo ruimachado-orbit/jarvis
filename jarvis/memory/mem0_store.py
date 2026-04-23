@@ -26,7 +26,7 @@ class Mem0Store:
     ) -> None:
         self.user_id = user_id
         self.enabled = enabled and _MEM0_AVAILABLE
-        self._mem: "Memory | None" = None
+        self._mem: Memory | None = None
         if self.enabled:
             Path(path).mkdir(parents=True, exist_ok=True)
             config = {

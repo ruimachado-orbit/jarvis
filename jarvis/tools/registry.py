@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from jarvis.core.config import Settings
-from jarvis.tools.coding import Toolbox as CodingToolbox, ToolError
 from jarvis.tools import web_tools
+from jarvis.tools.coding import Toolbox as CodingToolbox
+from jarvis.tools.coding import ToolError
 
 
 class Toolbox:

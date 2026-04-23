@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 log = logging.getLogger(__name__)
@@ -38,8 +39,10 @@ async def _brave_search(query: str, api_key: str, limit: int) -> str:
 async def _ddg_search(query: str, limit: int) -> str:
     if DDGS is None:
         return "(duckduckgo_search not installed)"
-    with DDGS() as ddgs:
-        results = list(ddgs.text(query, max_results=limit))
+    def _run():
+        with DDGS() as ddgs:
+            return list(ddgs.text(query, max_results=limit))
+    results = await asyncio.to_thread(_run)
     lines = [f"{i+1}. {r['title']} — {r['href']}\n   {r['body']}"
              for i, r in enumerate(results)]
     return "\n".join(lines) or "(no results)"

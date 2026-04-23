@@ -42,3 +42,10 @@ def test_retrieve_disabled(tmp_path):
         results = store.retrieve("anything")
         assert results == []
         instance.search.assert_not_called()
+
+
+def test_forget_calls_delete(mock_mem0, tmp_path):
+    mock_mem0.search.return_value = {"results": [{"id": "mem123", "memory": "old fact"}]}
+    store = Mem0Store(str(tmp_path / "mem0"), user_id="test_user")
+    store.forget("old fact")
+    mock_mem0.delete.assert_called_once_with("mem123")

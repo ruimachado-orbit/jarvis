@@ -84,7 +84,7 @@ class WakeWord:
             device=self.settings.input_device or None,
             callback=_cb,
         ):
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             while True:
                 frame = await loop.run_in_executor(None, q.get)
                 if len(frame) < FRAME_SAMPLES:

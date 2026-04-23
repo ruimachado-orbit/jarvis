@@ -24,7 +24,7 @@ class TTS:
     def __init__(self, settings: Settings) -> None:
         self._voice = settings.tts_voice
         self._speed = settings.tts_speed
-        self._kokoro: "KokoroTTS | None" = None
+        self._kokoro: KokoroTTS | None = None
         if _KOKORO_AVAILABLE:
             self._kokoro = KokoroTTS()
 

@@ -48,20 +48,17 @@ class STT:
 
         # reject if audio energy is too low (background noise)
         rms = float(np.sqrt(np.mean(audio ** 2)))
-        if rms < 0.02:
+        if rms < 0.001:
             return ""
 
         def _run() -> str:
             segments, info = self._model().transcribe(
                 audio,
                 language=self.settings.stt_language,
-                vad_filter=True,
+                vad_filter=False,
                 beam_size=1,
-                no_speech_threshold=0.5,
-                log_prob_threshold=-0.8,
-                compression_ratio_threshold=2.4,
+                no_speech_threshold=0.6,
             )
-            texts = [seg.text.strip() for seg in segments if seg.no_speech_prob < 0.5]
-            return " ".join(texts).strip()
+            return " ".join(seg.text.strip() for seg in segments).strip()
 
         return await asyncio.to_thread(_run)

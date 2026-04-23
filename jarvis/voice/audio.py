@@ -16,10 +16,52 @@ log = logging.getLogger(__name__)
 FRAME_MS = 30  # webrtcvad only accepts 10/20/30 ms frames
 
 
+def _pick_input_device() -> int | None:
+    """Return the best available input device index, or None for system default."""
+    import sounddevice as sd
+    devices = sd.query_devices()
+    default_in = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
+
+    # Priority: default first, then any device with input channels
+    # Test each by sampling 0.1s and checking RMS > noise floor
+    candidates = [default_in] + [
+        i for i, d in enumerate(devices)
+        if d["max_input_channels"] > 0 and i != default_in
+    ]
+
+    import queue as _queue
+    for dev_id in candidates:
+        try:
+            q: _queue.Queue = _queue.Queue()
+            sr = 16000
+            blocksize = 480
+
+            def _cb(indata, *_):
+                q.put(indata[:, 0].copy())
+
+            with sd.InputStream(samplerate=sr, channels=1, dtype="int16",
+                                blocksize=blocksize, device=dev_id, callback=_cb):
+                frames = [q.get() for _ in range(6)]  # ~0.18s
+
+            import numpy as np
+            pcm = np.concatenate(frames).astype(np.float32) / 32768.0
+            rms = float(np.sqrt(np.mean(pcm ** 2)))
+            log.debug("device [%d] RMS=%.4f", dev_id, rms)
+            if rms > 0.0001:  # not completely silent
+                log.info("auto-selected input device [%d]: %s", dev_id, devices[dev_id]["name"])
+                return dev_id
+        except Exception:
+            continue
+
+    log.warning("no working input device found, using system default")
+    return None
+
+
 class AudioIO:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._playback_lock = asyncio.Lock()
+        self._input_device: int | None = None  # resolved at first use
 
     # ----- recording -----
 
@@ -47,9 +89,33 @@ class AudioIO:
         trailing_silence = 0
         total_frames = 0
 
-        dev = self.settings.input_device or None
-        if dev and dev.isdigit():
-            dev = int(dev)
+        # Use system default device — no hardcoding
+        dev = None
+
+        # Calibrate noise floor: sample 0.5s of ambient audio to set adaptive thresholds
+        noise_rms = 0.002
+        try:
+            _cal_q: queue.Queue[np.ndarray] = queue.Queue()
+            def _cal_cb(indata, *_): _cal_q.put(indata[:, 0].copy())
+            cal_frames: list[np.ndarray] = []
+            with sd.InputStream(samplerate=sr, channels=1, dtype="int16",
+                                blocksize=frame_samples, device=dev, callback=_cal_cb):
+                for _ in range(int(0.5 * sr / frame_samples)):
+                    try:
+                        cal_frames.append(_cal_q.get(timeout=1.0))
+                    except Exception:
+                        break
+            if cal_frames:
+                cal = np.concatenate(cal_frames).astype(np.float32) / 32768.0
+                noise_rms = float(np.sqrt(np.mean(cal ** 2)))
+                log.debug("noise floor rms=%.4f", noise_rms)
+        except Exception as e:
+            log.debug("noise calibration failed: %s", e)
+
+        # Speech threshold: 4× noise floor, minimum 0.003
+        SPEECH_RMS = max(0.003, noise_rms * 4.0)
+        SILENCE_RMS = max(0.002, noise_rms * 2.0)
+        log.debug("thresholds: speech=%.4f silence=%.4f", SPEECH_RMS, SILENCE_RMS)
 
         with sd.InputStream(
             samplerate=sr,
@@ -64,11 +130,18 @@ class AudioIO:
                 frame = await loop.run_in_executor(None, q.get)
                 if len(frame) < frame_samples:
                     continue
-                pcm_bytes = frame[:frame_samples].tobytes()
-                is_speech = vad.is_speech(pcm_bytes, sr)
+                frame = frame[:frame_samples]
+                frame_rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
+
+                try:
+                    is_speech = vad.is_speech(frame.tobytes(), sr) or frame_rms > SPEECH_RMS
+                except Exception:
+                    is_speech = frame_rms > SPEECH_RMS
+
+                is_silence = frame_rms < SILENCE_RMS
 
                 if triggered:
-                    collected.append(frame[:frame_samples])
+                    collected.append(frame)
                     total_frames += 1
                     trailing_silence = 0 if is_speech else trailing_silence + 1
                     if trailing_silence >= silence_frames and total_frames >= min_frames:
@@ -78,7 +151,7 @@ class AudioIO:
                 else:
                     if is_speech:
                         triggered = True
-                        collected.append(frame[:frame_samples])
+                        collected.append(frame)
                         total_frames += 1
 
         return np.concatenate(collected) if collected else np.zeros(0, dtype=np.int16)

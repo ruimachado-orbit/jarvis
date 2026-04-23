@@ -95,105 +95,28 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
 
     def _is_wake(text: str) -> bool:
         t = text.lower().strip()
-        # exact single word "jarvis" also wakes
-        if t.rstrip(".,!?") == "jarvis":
-            return True
-        return any(trigger in t for trigger in WAKE_TRIGGERS)
+        # fuzzy: any transcription containing "jarvis" wakes (covers "jarvis on", "hey jarvis", etc.)
+        return "jarvis" in t
 
     def _is_sleep(text: str) -> bool:
         t = text.lower().strip()
         return any(trigger in t for trigger in SLEEP_TRIGGERS)
 
-    # --- persistent claude process ---
     model = settings.llm_model
-    _claude_proc: asyncio.subprocess.Process | None = None
-    _proc_lock = asyncio.Lock()
-
-    async def _ensure_claude() -> asyncio.subprocess.Process:
-        nonlocal _claude_proc
-        if _claude_proc is None or _claude_proc.returncode is not None:
-            _claude_proc = await asyncio.create_subprocess_exec(
-                "claude", "--model", model,
-                "--input-format", "stream-json",
-                "--output-format", "stream-json",
-                "--verbose",
-                "-p",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            # drain init messages
-            async for raw in _claude_proc.stdout:
-                line = raw.decode().strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                    if ev.get("type") == "system" and ev.get("subtype") == "init":
-                        break
-                except Exception:
-                    continue
-        return _claude_proc
-
-    # pre-warm the process immediately
-    await _ensure_claude()
-
     SENT_RE = re.compile(r"([.!?])\s+")
+    conversation_history: list[dict] = []
 
     async def _ask_claude(user_text: str, sentence_cb=None) -> str:
-        async with _proc_lock:
-            proc = await _ensure_claude()
-            msg = json.dumps({"type": "user", "message": {"role": "user", "content": user_text}})
-            proc.stdin.write((msg + "\n").encode())
-            await proc.stdin.drain()
-
-            full_text: list[str] = []
-            sentence_buf = ""
-
-            while True:
-                try:
-                    raw = await asyncio.wait_for(proc.stdout.readline(), timeout=60.0)
-                except asyncio.TimeoutError:
-                    break
-                if not raw:
-                    break
-                line = raw.decode().strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    continue
-
-                token = None
-                etype = ev.get("type", "")
-                if etype == "content_block_delta":
-                    delta = ev.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        token = delta.get("text", "")
-                elif etype == "result":
-                    result_text = ev.get("result", "")
-                    if result_text and not full_text:
-                        full_text.append(result_text)
-                    break
-
-                if token:
-                    full_text.append(token)
-                    sentence_buf += token
-                    if sentence_cb:
-                        while True:
-                            m = SENT_RE.search(sentence_buf)
-                            if not m:
-                                break
-                            sentence = sentence_buf[:m.end()].strip()
-                            sentence_buf = sentence_buf[m.end():]
-                            if sentence:
-                                asyncio.ensure_future(sentence_cb(sentence))
-
-            if sentence_cb and sentence_buf.strip():
-                asyncio.ensure_future(sentence_cb(sentence_buf.strip()))
-
-            return "".join(full_text).strip()
+        from jarvis.graph.agent import run_turn
+        response, updated = await run_turn(
+            session["graph"], user_text,
+            trigger="voice", output_channel="voice",
+            conversation_history=conversation_history,
+            tts_callback=sentence_cb,
+        )
+        conversation_history.clear()
+        conversation_history.extend(updated)
+        return response
 
     # --- TTS with interrupt support ---
     _speaking = asyncio.Event()
@@ -283,7 +206,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                     sleeping = False
                     console.print("[bold green]Jarvis[/]: [yellow]Online, Sir.[/]")
                     await audio.play_boot_sound()
-                    asyncio.ensure_future(_stream_and_speak("Online, Sir. How can I help?"))
+                    asyncio.ensure_future(_stream_and_speak("Welcome Sir, what are we doing now?"))
                 continue
 
             # check interrupt: if speaking and user said something, stop audio

@@ -97,7 +97,11 @@
       "Bash(python3 /tmp/test_claude.py)",
       "Bash(python -m jarvis ask \"hey jarvis\")",
       "Bash(python3 -c ' *)",
-      "Bash(python3 -c \"import sounddevice as sd; d = sd.query_devices\\(2\\); print\\(d['name']\\)\")"
+      "Bash(python3 -c \"import sounddevice as sd; d = sd.query_devices\\(2\\); print\\(d['name']\\)\")",
+      "Bash(python -m jarvis voice --verbose)",
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(JARVIS_INPUT_DEVICE=2 .venv/bin/python /tmp/test_wake.py)",
+      "Bash(.venv/bin/python /tmp/test_wake2.py)"
     ],
     "additionalDirectories": [
       "/tmp"

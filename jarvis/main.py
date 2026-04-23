@@ -90,14 +90,19 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     audio = AudioIO(settings)
 
     # --- wake/sleep phrases ---
-    WAKE_PHRASES = {"hey jarvis", "jarvis", "jarvis wake up", "wake up jarvis"}
-    SLEEP_PHRASES = {"jarvis sleep", "go to sleep", "jarvis go to sleep", "sleep", "goodbye jarvis"}
+    WAKE_TRIGGERS = ["jarvis on", "hey jarvis", "jarvis wake", "wake up jarvis", "jarvis, on"]
+    SLEEP_TRIGGERS = ["jarvis sleep", "go to sleep", "jarvis, sleep", "goodbye jarvis", "jarvis off", "jarvis, off"]
 
     def _is_wake(text: str) -> bool:
-        return text.lower().strip().rstrip(".,!?") in WAKE_PHRASES
+        t = text.lower().strip()
+        # exact single word "jarvis" also wakes
+        if t.rstrip(".,!?") == "jarvis":
+            return True
+        return any(trigger in t for trigger in WAKE_TRIGGERS)
 
     def _is_sleep(text: str) -> bool:
-        return text.lower().strip().rstrip(".,!?") in SLEEP_PHRASES
+        t = text.lower().strip()
+        return any(trigger in t for trigger in SLEEP_TRIGGERS)
 
     # --- persistent claude process ---
     model = settings.llm_model
@@ -145,7 +150,13 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             full_text: list[str] = []
             sentence_buf = ""
 
-            async for raw in proc.stdout:
+            while True:
+                try:
+                    raw = await asyncio.wait_for(proc.stdout.readline(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    break
+                if not raw:
+                    break
                 line = raw.decode().strip()
                 if not line:
                     continue
@@ -161,7 +172,6 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                     if delta.get("type") == "text_delta":
                         token = delta.get("text", "")
                 elif etype == "result":
-                    # turn complete
                     result_text = ev.get("result", "")
                     if result_text and not full_text:
                         full_text.append(result_text)
@@ -268,12 +278,12 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             console.print(f"[dim]you[/dim]: {text}")
 
             if sleeping:
+                console.print(f"[dim](sleeping) heard: '{text}'[/dim]")
                 if _is_wake(text):
                     sleeping = False
                     console.print("[bold green]Jarvis[/]: [yellow]Online, Sir.[/]")
+                    await audio.play_boot_sound()
                     asyncio.ensure_future(_stream_and_speak("Online, Sir. How can I help?"))
-                else:
-                    console.print("[dim](sleeping — say 'Hey Jarvis' to wake)[/dim]")
                 continue
 
             # check interrupt: if speaking and user said something, stop audio
@@ -285,6 +295,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                 sleeping = True
                 console.print("[bold green]Jarvis[/]: [dim]Going to sleep.[/]")
                 asyncio.ensure_future(_stream_and_speak("Going to sleep, Sir. Call me when you need me."))
+                await audio.play_sleep_sound()
                 continue
 
             console.print("[bold green]Jarvis[/]: ", end="")

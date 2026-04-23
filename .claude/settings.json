@@ -93,7 +93,11 @@
       "Bash(time echo *)",
       "Bash(claude -p \"say hi in one word\" --output-format text)",
       "Bash(python -m pytest tests/ --tb=short --ignore=tests/test_memory.py --ignore=tests/test_tools_safety.py --ignore=tests/test_streaming_pipeline.py --ignore=tests/test_agent_streaming.py -q)",
-      "Bash(claude -p --input-format stream-json --output-format stream-json --verbose)"
+      "Bash(claude -p --input-format stream-json --output-format stream-json --verbose)",
+      "Bash(python3 /tmp/test_claude.py)",
+      "Bash(python -m jarvis ask \"hey jarvis\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import sounddevice as sd; d = sd.query_devices\\(2\\); print\\(d['name']\\)\")"
     ],
     "additionalDirectories": [
       "/tmp"

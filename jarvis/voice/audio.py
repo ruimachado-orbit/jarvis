@@ -47,12 +47,16 @@ class AudioIO:
         trailing_silence = 0
         total_frames = 0
 
+        dev = self.settings.input_device or None
+        if dev and dev.isdigit():
+            dev = int(dev)
+
         with sd.InputStream(
             samplerate=sr,
             channels=1,
             dtype="int16",
             blocksize=frame_samples,
-            device=self.settings.input_device or None,
+            device=dev,
             callback=_cb,
         ):
             loop = asyncio.get_running_loop()
@@ -81,6 +85,74 @@ class AudioIO:
 
     # ----- playback -----
 
+    async def play_boot_sound(self) -> None:
+        """Play Iron Man HUD power-on chime."""
+        import sounddevice as sd
+
+        sr = 44100
+
+        def _tone(freq, dur, vol=0.4, fade=0.02):
+            t = np.linspace(0, dur, int(sr * dur), False)
+            wave = (np.sin(2 * np.pi * freq * t) + 0.15 * np.sin(4 * np.pi * freq * t)) * vol
+            fade_s = int(sr * fade)
+            if fade_s > 0:
+                wave[:fade_s] *= np.linspace(0, 1, fade_s)
+                wave[-fade_s:] *= np.linspace(1, 0, fade_s)
+            return wave
+
+        def _silence(dur):
+            return np.zeros(int(sr * dur))
+
+        crackle = np.random.randn(int(sr * 0.08)) * 0.1
+        hum = np.concatenate([_tone(80 + i * 8, 0.03, 0.15) for i in range(20)])
+        blips = np.concatenate([
+            _tone(1200, 0.05), _silence(0.03),
+            _tone(1500, 0.05), _silence(0.03),
+            _tone(1800, 0.07), _silence(0.02),
+        ])
+        chord = (
+            _tone(330, 0.6, 0.3) +
+            _tone(415, 0.6, 0.25) +
+            _tone(494, 0.6, 0.2) +
+            _tone(659, 0.6, 0.15)
+        )
+        ping = _tone(2093, 0.4, 0.25, fade=0.05)
+        boot = np.concatenate([crackle, hum, _silence(0.05), blips, chord * 0.7, _silence(0.02), ping])
+        boot = np.clip(boot, -1, 1).astype(np.float32)
+
+        await asyncio.to_thread(lambda: (sd.play(boot, sr, device=self._output_device()), sd.wait()))
+
+    async def play_sleep_sound(self) -> None:
+        """Play power-down chime."""
+        import sounddevice as sd
+
+        sr = 44100
+
+        def _tone(freq, dur, vol=0.3, fade=0.02):
+            t = np.linspace(0, dur, int(sr * dur), False)
+            wave = (np.sin(2 * np.pi * freq * t) + 0.1 * np.sin(4 * np.pi * freq * t)) * vol
+            fade_s = int(sr * fade)
+            if fade_s > 0:
+                wave[:fade_s] *= np.linspace(0, 1, fade_s)
+                wave[-fade_s:] *= np.linspace(1, 0, fade_s)
+            return wave
+
+        def _silence(dur):
+            return np.zeros(int(sr * dur))
+
+        # descending tones + fade out hum
+        down = np.concatenate([
+            _tone(659, 0.08), _silence(0.02),
+            _tone(494, 0.08), _silence(0.02),
+            _tone(330, 0.08), _silence(0.02),
+            _tone(220, 0.12), _silence(0.02),
+        ])
+        hum_down = np.concatenate([_tone(80 - i * 3, 0.03, 0.12) for i in range(15)])
+        sleep_snd = np.concatenate([down, hum_down])
+        sleep_snd = np.clip(sleep_snd, -1, 1).astype(np.float32)
+
+        await asyncio.to_thread(lambda: (sd.play(sleep_snd, sr, device=self._output_device()), sd.wait()))
+
     def stop(self) -> None:
         """Stop current playback immediately."""
         try:
@@ -88,6 +160,12 @@ class AudioIO:
             sd.stop()
         except Exception:
             pass
+
+    def _output_device(self):
+        dev = self.settings.output_device or None
+        if dev and str(dev).isdigit():
+            return int(dev)
+        return dev
 
     async def play(self, pcm: np.ndarray, sample_rate: int) -> None:
         if pcm.size == 0:
@@ -99,7 +177,7 @@ class AudioIO:
                 sd.play(
                     pcm,
                     samplerate=sample_rate,
-                    device=self.settings.output_device or None,
+                    device=self._output_device(),
                     blocking=True,
                 )
                 sd.wait()

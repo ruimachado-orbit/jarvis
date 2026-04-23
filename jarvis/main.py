@@ -72,6 +72,8 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     from jarvis.voice.tts import TTS
     from jarvis.voice.wake import WakeWord
     from jarvis.telegram_bot import TelegramBridge
+    from jarvis.graph.nodes import _build_claude_prompt, _build_system_with_memories, TOOL_CALL_RE
+    import json, re
 
     settings = get_settings()
     if stream is not None:
@@ -81,40 +83,165 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
 
     session = build_session(settings)
     inject_google(session)
-    graph = session["graph"]
+    toolbox = session["toolbox"]
 
     stt = STT(settings)
     tts = TTS(settings)
     audio = AudioIO(settings)
-    wake_detector = WakeWord(settings)
 
-    conversation_history: list = []
+    # --- wake/sleep phrases ---
+    WAKE_PHRASES = {"hey jarvis", "jarvis", "jarvis wake up", "wake up jarvis"}
+    SLEEP_PHRASES = {"jarvis sleep", "go to sleep", "jarvis go to sleep", "sleep", "goodbye jarvis"}
+
+    def _is_wake(text: str) -> bool:
+        return text.lower().strip().rstrip(".,!?") in WAKE_PHRASES
+
+    def _is_sleep(text: str) -> bool:
+        return text.lower().strip().rstrip(".,!?") in SLEEP_PHRASES
+
+    # --- persistent claude process ---
+    model = settings.llm_model
+    _claude_proc: asyncio.subprocess.Process | None = None
+    _proc_lock = asyncio.Lock()
+
+    async def _ensure_claude() -> asyncio.subprocess.Process:
+        nonlocal _claude_proc
+        if _claude_proc is None or _claude_proc.returncode is not None:
+            _claude_proc = await asyncio.create_subprocess_exec(
+                "claude", "--model", model,
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--verbose",
+                "-p",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            # drain init messages
+            async for raw in _claude_proc.stdout:
+                line = raw.decode().strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if ev.get("type") == "system" and ev.get("subtype") == "init":
+                        break
+                except Exception:
+                    continue
+        return _claude_proc
+
+    # pre-warm the process immediately
+    await _ensure_claude()
+
+    SENT_RE = re.compile(r"([.!?])\s+")
+
+    async def _ask_claude(user_text: str, sentence_cb=None) -> str:
+        async with _proc_lock:
+            proc = await _ensure_claude()
+            msg = json.dumps({"type": "user", "message": {"role": "user", "content": user_text}})
+            proc.stdin.write((msg + "\n").encode())
+            await proc.stdin.drain()
+
+            full_text: list[str] = []
+            sentence_buf = ""
+
+            async for raw in proc.stdout:
+                line = raw.decode().strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+
+                token = None
+                etype = ev.get("type", "")
+                if etype == "content_block_delta":
+                    delta = ev.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        token = delta.get("text", "")
+                elif etype == "result":
+                    # turn complete
+                    result_text = ev.get("result", "")
+                    if result_text and not full_text:
+                        full_text.append(result_text)
+                    break
+
+                if token:
+                    full_text.append(token)
+                    sentence_buf += token
+                    if sentence_cb:
+                        while True:
+                            m = SENT_RE.search(sentence_buf)
+                            if not m:
+                                break
+                            sentence = sentence_buf[:m.end()].strip()
+                            sentence_buf = sentence_buf[m.end():]
+                            if sentence:
+                                asyncio.ensure_future(sentence_cb(sentence))
+
+            if sentence_cb and sentence_buf.strip():
+                asyncio.ensure_future(sentence_cb(sentence_buf.strip()))
+
+            return "".join(full_text).strip()
+
+    # --- TTS with interrupt support ---
+    _speaking = asyncio.Event()
+    _interrupt = asyncio.Event()
+
+    async def _speak(sentence: str) -> None:
+        if _interrupt.is_set():
+            return
+        try:
+            pcm_out, sr = await tts.synthesize(sentence)
+            _speaking.set()
+            await audio.play(pcm_out, sr)
+        except Exception as e:
+            log.warning("TTS error: %s", e)
+        finally:
+            _speaking.clear()
+
+    async def _stream_and_speak(text: str) -> str:
+        tts_tasks: list[asyncio.Task] = []
+        _interrupt.clear()
+
+        async def _on_sentence(s: str) -> None:
+            if not _interrupt.is_set():
+                t = asyncio.create_task(_speak(s))
+                tts_tasks.append(t)
+
+        reply = await _ask_claude(text, sentence_cb=_on_sentence)
+
+        # wait for all queued TTS to finish (unless interrupted)
+        for t in tts_tasks:
+            if not _interrupt.is_set():
+                await t
+            else:
+                t.cancel()
+
+        return reply
 
     async def _respond(text: str) -> str:
-        nonlocal conversation_history
-        response, conversation_history = await run_turn(
-            graph, text, trigger="voice", output_channel="voice",
-            conversation_history=conversation_history,
-        )
-        return response
+        reply = await _stream_and_speak(text)
+        return reply
 
     bridge = TelegramBridge(settings, _respond)
     await bridge.start()
 
     monitor_tasks = []
-    if session["toolbox"]._calendar:
+    if toolbox._calendar:
         from jarvis.graph.proactive.calendar import CalendarMonitor
         cal_monitor = CalendarMonitor(
-            graph, session["toolbox"]._calendar,
+            session["graph"], toolbox._calendar,
             notify_fn=bridge.notify,
             poll_seconds=settings.calendar_poll_seconds,
         )
         monitor_tasks.append(asyncio.create_task(cal_monitor.run_forever()))
 
-    if session["toolbox"]._email:
+    if toolbox._email:
         from jarvis.graph.proactive.email import EmailMonitor
         email_monitor = EmailMonitor(
-            graph, session["toolbox"]._email,
+            session["graph"], toolbox._email,
             notify_fn=bridge.notify,
             poll_seconds=settings.email_poll_seconds,
         )
@@ -122,41 +249,51 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
 
     stop = asyncio.Event()
     _install_signal_handlers(stop)
-    wake_mode = "wake-word" if settings.wake_enabled else "always-on"
-    console.print(f"[bold green]Jarvis online.[/] listening={wake_mode}. Ctrl-C to quit.")
+
+    # state: sleeping = waiting for wake phrase
+    sleeping = True
+
+    console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] to wake me. Ctrl-C to quit.")
 
     try:
         while not stop.is_set():
-            if settings.wake_enabled:
-                console.print(f"[dim]waiting for '{settings.wake_word}'...[/dim]")
-                await wake_detector.wait_for_wake()
-                if stop.is_set():
-                    break
-                console.print("[yellow]yes?[/yellow]")
-            console.print("[dim]listening...[/dim]")
             pcm = await audio.record_utterance()
             if pcm.size == 0:
                 continue
             text = await stt.transcribe(pcm, settings.sample_rate)
             if not text:
                 continue
-            console.print(f"[cyan]you[/cyan]: {text}")
 
-            if (
-                not wake_detector.ready
-                and settings.require_wake_word
-                and not wake_detector.matches_text(text)
-            ):
-                console.print("[dim](no wake word, ignoring)[/dim]")
+            text = text.strip()
+            console.print(f"[dim]you[/dim]: {text}")
+
+            if sleeping:
+                if _is_wake(text):
+                    sleeping = False
+                    console.print("[bold green]Jarvis[/]: [yellow]Online, Sir.[/]")
+                    asyncio.ensure_future(_stream_and_speak("Online, Sir. How can I help?"))
+                else:
+                    console.print("[dim](sleeping — say 'Hey Jarvis' to wake)[/dim]")
                 continue
 
-            console.print("[magenta]jarvis[/magenta]: ", end="")
+            # check interrupt: if speaking and user said something, stop audio
+            if _speaking.is_set():
+                _interrupt.set()
+                audio.stop()
+
+            if _is_sleep(text):
+                sleeping = True
+                console.print("[bold green]Jarvis[/]: [dim]Going to sleep.[/]")
+                asyncio.ensure_future(_stream_and_speak("Going to sleep, Sir. Call me when you need me."))
+                continue
+
+            console.print("[bold green]Jarvis[/]: ", end="")
             reply = await _respond(text)
             console.print(reply)
-            if reply:
-                pcm_out, sr = await tts.synthesize(reply)
-                await audio.play(pcm_out, sr)
+
     finally:
+        if _claude_proc and _claude_proc.returncode is None:
+            _claude_proc.terminate()
         for t in monitor_tasks:
             t.cancel()
         await bridge.stop()

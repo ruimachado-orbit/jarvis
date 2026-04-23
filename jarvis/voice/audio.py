@@ -81,6 +81,14 @@ class AudioIO:
 
     # ----- playback -----
 
+    def stop(self) -> None:
+        """Stop current playback immediately."""
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
     async def play(self, pcm: np.ndarray, sample_rate: int) -> None:
         if pcm.size == 0:
             return

@@ -20,3 +20,4 @@ class AgentState(TypedDict, total=False):
     error: str | None
     settings: Any                    # Settings object passed through state
     toolbox: Any                     # Toolbox object passed through state
+    tts_callback: Any                # async callable(sentence: str) for streaming TTS

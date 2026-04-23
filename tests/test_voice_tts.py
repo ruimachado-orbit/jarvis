@@ -9,7 +9,7 @@ from jarvis.voice.tts import TTS
 def mock_kokoro():
     with patch("jarvis.voice.tts.KokoroTTS") as mock_cls:
         instance = MagicMock()
-        instance.create.return_value = [(np.zeros(16000, dtype=np.float32), 24000)]
+        instance.create.return_value = (np.zeros(16000, dtype=np.float32), 24000)
         mock_cls.return_value = instance
         yield mock_cls
 

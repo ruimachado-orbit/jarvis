@@ -64,20 +64,73 @@ def _build_claude_prompt(system: str, messages: list[dict]) -> str:
     return "\n".join(parts)
 
 
-async def _run_claude(prompt: str, model: str) -> str:
-    """Run claude -p and return stdout."""
+async def _run_claude(
+    prompt: str,
+    model: str,
+    sentence_callback: "asyncio.coroutines | None" = None,
+) -> str:
+    """Stream claude -p output, firing sentence_callback(sentence) as sentences complete."""
     proc = await asyncio.create_subprocess_exec(
         "claude", "-p", prompt,
         "--model", model,
-        "--output-format", "text",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--include-partial-messages",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        err = stderr.decode().strip()
+
+    full_text = []
+    sentence_buf = ""
+    # Sentence-ending pattern: period/!/?  followed by space or end
+    _SENT_RE = re.compile(r"([.!?])\s+")
+
+    async for raw_line in proc.stdout:
+        line = raw_line.decode().strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        # stream-json partial message chunks
+        token = None
+        etype = event.get("type", "")
+        if etype == "assistant" and isinstance(event.get("message"), dict):
+            # final assistant message
+            for block in event["message"].get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    token = block["text"]
+        elif etype == "content_block_delta":
+            delta = event.get("delta", {})
+            if delta.get("type") == "text_delta":
+                token = delta.get("text", "")
+
+        if token:
+            full_text.append(token)
+            sentence_buf += token
+            # Fire callback on each completed sentence
+            if sentence_callback:
+                while True:
+                    m = _SENT_RE.search(sentence_buf)
+                    if not m:
+                        break
+                    sentence = sentence_buf[:m.end()].strip()
+                    sentence_buf = sentence_buf[m.end():]
+                    if sentence:
+                        asyncio.ensure_future(sentence_callback(sentence))
+
+    # flush remaining buffer
+    if sentence_callback and sentence_buf.strip():
+        asyncio.ensure_future(sentence_callback(sentence_buf.strip()))
+
+    await proc.wait()
+    if proc.returncode not in (0, None):
+        err = (await proc.stderr.read()).decode().strip()
         raise RuntimeError(f"claude -p failed (rc={proc.returncode}): {err}")
-    return stdout.decode().strip()
+
+    return "".join(full_text).strip()
 
 
 async def think_node(state: AgentState) -> dict[str, Any]:
@@ -116,8 +169,9 @@ async def think_node(state: AgentState) -> dict[str, Any]:
     while turns < MAX_TURNS:
         turns += 1
         prompt = _build_claude_prompt(system, messages)
+        tts_callback = state.get("tts_callback")
         try:
-            response_text = await _run_claude(prompt, model)
+            response_text = await _run_claude(prompt, model, sentence_callback=tts_callback)
         except Exception as e:
             log.error("claude -p error: %s", e)
             return {**state, "final_response": f"Sorry, I encountered an error: {e}", "error": str(e)}

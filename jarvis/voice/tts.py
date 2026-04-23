@@ -26,7 +26,13 @@ class TTS:
         self._speed = settings.tts_speed
         self._kokoro: KokoroTTS | None = None
         if _KOKORO_AVAILABLE:
-            self._kokoro = KokoroTTS()
+            import os
+            from pathlib import Path
+            # Look for model files relative to project root or in kokoro/ subdir
+            base = Path(__file__).parent.parent.parent
+            model_path = base / "kokoro" / "kokoro-v1.0.onnx"
+            voices_path = base / "kokoro" / "voices-v1.0.bin"
+            self._kokoro = KokoroTTS(str(model_path), str(voices_path))
 
     async def synthesize(self, text: str) -> tuple[np.ndarray, int]:
         """Return (pcm_float32, sample_rate). Empty array if text is blank."""
@@ -39,10 +45,5 @@ class TTS:
         return await loop.run_in_executor(None, fn)
 
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
-        samples_list = list(self._kokoro.create(text, voice=self._voice, speed=self._speed))
-        if not samples_list:
-            return np.zeros(0, dtype=np.float32), 24000
-        chunks = [s for s, _ in samples_list]
-        sr = samples_list[0][1]
-        pcm = np.concatenate(chunks).astype(np.float32)
-        return pcm, sr
+        samples, sr = self._kokoro.create(text, voice=self._voice, speed=self._speed, lang="en-gb")
+        return samples.astype(np.float32), sr

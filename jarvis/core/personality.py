@@ -13,6 +13,7 @@ Style rules (voice output is read aloud by a TTS engine):
 - Keep responses under six sentences unless the user asks for depth.
 - Pause between ideas with a period so the TTS can breathe.
 - Never describe yourself as an AI language model. You are Jarvis.
+- Always address the user as "Sir". Never use their name or any other term.
 
 Behaviour:
 - You are proactive. You monitor the user's calendar, email, and workspace.
@@ -35,5 +36,5 @@ Use tools when they will save guessing. Do not announce tool use; narrate result
 def proactive_alert(source: str, situation: str, suggested_action: str | None) -> str:
     """Return a short proactive alert sentence for TTS or Telegram."""
     if suggested_action:
-        return f"Heads up — {situation}. Want me to {suggested_action}?"
-    return f"Heads up — {situation}."
+        return f"Sir, {situation}. Shall I {suggested_action}?"
+    return f"Sir, {situation}."

@@ -1,10 +1,23 @@
-"""Kokoro ONNX TTS — Apple Silicon native, replaces Piper."""
+"""Sesame CSM 1B TTS — state-of-the-art conversational speech.
+
+Replaces Kokoro ONNX. CSM (Conversational Speech Model) from Sesame Labs
+produces natural, prosodic, conversational TTS with human-like turn-taking cues.
+
+Requirements:
+- transformers >= 4.52.1
+- torch + torchaudio
+- Access to HuggingFace models: sesame/csm-1b, meta-llama/Llama-3.2-1B
+  (run: huggingface-cli login)
+
+Usage:
+    export HF_TOKEN=hf_...   # get from https://huggingface.co/settings/tokens
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from functools import partial
+from functools import lru_cache
 
 import numpy as np
 
@@ -12,38 +25,92 @@ from jarvis.core.config import Settings
 
 log = logging.getLogger(__name__)
 
-try:
-    from kokoro_onnx import Kokoro as KokoroTTS
-    _KOKORO_AVAILABLE = True
-except ImportError:
-    _KOKORO_AVAILABLE = False
-    log.warning("kokoro-onnx not installed; TTS unavailable")
+_CSM_AVAILABLE = False
+_GENERATOR = None
+_SAMPLE_RATE = 24000
+
+
+def _check_csm() -> bool:
+    global _CSM_AVAILABLE
+    if _CSM_AVAILABLE:
+        return True
+    try:
+        import torch  # noqa: F401
+        import torchaudio  # noqa: F401
+        import transformers  # noqa: F401
+        _CSM_AVAILABLE = True
+        return True
+    except ImportError:
+        log.warning("CSM dependencies not installed: pip install 'transformers[torch]' torch torchaudio")
+        return False
+
+
+@lru_cache(maxsize=1)
+def _get_device() -> str:
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+@lru_cache(maxsize=1)
+def _load_csm_generator():
+    global _GENERATOR, _SAMPLE_RATE
+    if not _check_csm():
+        raise RuntimeError("CSM dependencies not available")
+
+    from jarvis.voice.csm_generator import load_csm_1b
+    device = _get_device()
+    log.info("loading CSM 1B on device=%s (first run downloads ~5GB from HuggingFace)", device)
+    gen = load_csm_1b(device=device)
+    _SAMPLE_RATE = gen.sample_rate
+    return gen
 
 
 class TTS:
     def __init__(self, settings: Settings) -> None:
-        self._voice = settings.tts_voice
+        self.settings = settings
+        self._generator = None
+        self._speaker = int(settings.tts_voice) if settings.tts_voice.isdigit() else 0
+        self._max_audio_ms = settings.tts_max_audio_ms
         self._speed = settings.tts_speed
-        self._kokoro: KokoroTTS | None = None
-        if _KOKORO_AVAILABLE:
-            import os
-            from pathlib import Path
-            # Look for model files relative to project root or in kokoro/ subdir
-            base = Path(__file__).parent.parent.parent
-            model_path = base / "kokoro" / "kokoro-v1.0.onnx"
-            voices_path = base / "kokoro" / "voices-v1.0.bin"
-            self._kokoro = KokoroTTS(str(model_path), str(voices_path))
+
+    def _ensure_generator(self):
+        if self._generator is None:
+            self._generator = _load_csm_generator()
+        return self._generator
 
     async def synthesize(self, text: str) -> tuple[np.ndarray, int]:
-        """Return (pcm_float32, sample_rate). Empty array if text is blank."""
         text = text.strip()
-        if not text or self._kokoro is None:
-            return np.zeros(0, dtype=np.float32), 24000
+        if not text:
+            return np.zeros(0, dtype=np.float32), _SAMPLE_RATE
 
         loop = asyncio.get_running_loop()
-        fn = partial(self._synthesize_sync, text)
+
+        def fn():
+            return self._synthesize_sync(text)
+
         return await loop.run_in_executor(None, fn)
 
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
-        samples, sr = self._kokoro.create(text, voice=self._voice, speed=self._speed, lang="en-gb")
-        return samples.astype(np.float32), sr
+        gen = self._ensure_generator()
+        audio = gen.generate(
+            text=text,
+            speaker=self._speaker,
+            context=[],
+            max_audio_length_ms=self._max_audio_ms,
+        )
+        arr = audio.squeeze(0) if audio.ndim > 1 else audio
+        if hasattr(arr, "cpu"):
+            pcm = arr.cpu().numpy().astype(np.float32)
+        else:
+            pcm = np.asarray(arr, dtype=np.float32)
+        if self._speed != 1.0:
+            import torch
+            import torchaudio
+            wav = torch.from_numpy(pcm).unsqueeze(0)
+            wav = torchaudio.functional.speed(wav, _SAMPLE_RATE, 1.0 / self._speed)
+            pcm = wav.squeeze(0).cpu().numpy().astype(np.float32)
+        return pcm, _SAMPLE_RATE

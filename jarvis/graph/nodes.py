@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import re
+import subprocess
+import time
 from typing import TYPE_CHECKING, Any
 
 from jarvis.core.personality import SYSTEM_PROMPT
@@ -18,6 +20,29 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 MAX_TURNS = 6
+
+# --- OAuth token cache (read from macOS keychain once, refresh when expired) ---
+_token_cache: dict = {}
+
+def _get_oauth_token() -> str:
+    """Return a valid Claude OAuth access token from the macOS keychain."""
+    now_ms = time.time() * 1000
+    if _token_cache.get("token") and _token_cache.get("expires_at", 0) > now_ms + 60_000:
+        return _token_cache["token"]
+
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", "Claude Code-credentials",
+         "-a", "ruimachado", "-w"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Cannot read Claude credentials from keychain")
+
+    creds = json.loads(result.stdout.strip())
+    oauth = creds["claudeAiOauth"]
+    _token_cache["token"] = oauth["accessToken"]
+    _token_cache["expires_at"] = oauth["expiresAt"]
+    return _token_cache["token"]
 
 CONFIRMATION_REQUIRED_TOOLS = {"write_file", "run_shell", "create_event", "update_event", "send_email"}
 
@@ -64,26 +89,46 @@ def _build_claude_prompt(system: str, messages: list[dict]) -> str:
     return "\n".join(parts)
 
 
+_SENT_RE = re.compile(r"([.!?—])\s+")
+
+
 async def _run_claude(
-    prompt: str,
+    system: str,
+    messages: list[dict],
     model: str,
     sentence_callback: "asyncio.coroutines | None" = None,
 ) -> str:
-    """Stream claude -p output, firing sentence_callback(sentence) as sentences complete."""
+    """Stream claude --bare (no hooks/plugins), firing sentence_callback per sentence."""
+    token = _get_oauth_token()
+
+    # Build just the conversation part (no system block) for -p
+    conv_parts = []
+    for msg in messages:
+        if msg.get("role") == "system":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        conv_parts.append(f"<{msg['role']}>\n{content}\n</{msg['role']}>")
+    conversation = "\n".join(conv_parts)
+
     proc = await asyncio.create_subprocess_exec(
-        "claude", "-p", prompt,
+        "claude", "--bare", "-p", conversation,
         "--model", model,
+        "--system-prompt", system,
         "--output-format", "stream-json",
         "--verbose",
         "--include-partial-messages",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env={**__import__("os").environ, "ANTHROPIC_API_KEY": token},
     )
 
-    full_text = []
+    full_text: list[str] = []
     sentence_buf = ""
-    # Sentence-ending pattern: period/!/?  followed by space or end
-    _SENT_RE = re.compile(r"([.!?])\s+")
 
     async for raw_line in proc.stdout:
         line = raw_line.decode().strip()
@@ -94,23 +139,20 @@ async def _run_claude(
         except json.JSONDecodeError:
             continue
 
-        # stream-json partial message chunks
-        token = None
+        token_text = None
         etype = event.get("type", "")
-        if etype == "assistant" and isinstance(event.get("message"), dict):
-            # final assistant message
-            for block in event["message"].get("content", []):
-                if isinstance(block, dict) and block.get("type") == "text":
-                    token = block["text"]
-        elif etype == "content_block_delta":
-            delta = event.get("delta", {})
-            if delta.get("type") == "text_delta":
-                token = delta.get("text", "")
+        if etype == "stream_event":
+            inner = event.get("event", {})
+            if inner.get("type") == "content_block_delta":
+                delta = inner.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    token_text = delta.get("text", "")
+        elif etype == "result" and not full_text and not event.get("is_error"):
+            token_text = event.get("result", "")
 
-        if token:
-            full_text.append(token)
-            sentence_buf += token
-            # Fire callback on each completed sentence
+        if token_text:
+            full_text.append(token_text)
+            sentence_buf += token_text
             if sentence_callback:
                 while True:
                     m = _SENT_RE.search(sentence_buf)
@@ -119,16 +161,15 @@ async def _run_claude(
                     sentence = sentence_buf[:m.end()].strip()
                     sentence_buf = sentence_buf[m.end():]
                     if sentence:
-                        asyncio.ensure_future(sentence_callback(sentence))
+                        await sentence_callback(sentence)
 
-    # flush remaining buffer
     if sentence_callback and sentence_buf.strip():
-        asyncio.ensure_future(sentence_callback(sentence_buf.strip()))
+        await sentence_callback(sentence_buf.strip())
 
     await proc.wait()
     if proc.returncode not in (0, None):
         err = (await proc.stderr.read()).decode().strip()
-        raise RuntimeError(f"claude -p failed (rc={proc.returncode}): {err}")
+        raise RuntimeError(f"claude --bare failed (rc={proc.returncode}): {err}")
 
     return "".join(full_text).strip()
 
@@ -168,12 +209,11 @@ async def think_node(state: AgentState) -> dict[str, Any]:
 
     while turns < MAX_TURNS:
         turns += 1
-        prompt = _build_claude_prompt(system, messages)
         tts_callback = state.get("tts_callback")
         try:
-            response_text = await _run_claude(prompt, model, sentence_callback=tts_callback)
+            response_text = await _run_claude(system, messages, model, sentence_callback=tts_callback)
         except Exception as e:
-            log.error("claude -p error: %s", e)
+            log.error("LLM error: %s", e)
             return {**state, "final_response": f"Sorry, I encountered an error: {e}", "error": str(e)}
 
         tool_calls_raw = TOOL_CALL_RE.findall(response_text)

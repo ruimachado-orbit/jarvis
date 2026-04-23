@@ -17,7 +17,10 @@ import asyncio
 import logging
 import signal
 import sys
+from pathlib import Path
 from typing import Optional
+
+import numpy as np
 
 import typer
 from rich.console import Console
@@ -118,45 +121,177 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
         conversation_history.extend(updated)
         return response
 
-    # --- TTS with interrupt support ---
-    _speaking = asyncio.Event()
-    _interrupt = asyncio.Event()
+    # --- TTS + interrupt ---
+    _tts_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    _speaking = asyncio.Event()   # set while audio is physically playing
+    _interrupt = asyncio.Event()  # set when user speaks over Jarvis
+    # Queue for utterances captured by the interrupt watcher
+    _captured: asyncio.Queue[np.ndarray] = asyncio.Queue()
 
-    async def _speak(sentence: str) -> None:
-        if _interrupt.is_set():
-            return
+    async def _tts_consumer() -> None:
+        while True:
+            sentence = await _tts_queue.get()
+            if sentence is None:
+                _tts_queue.task_done()
+                break
+            if _interrupt.is_set():
+                _tts_queue.task_done()
+                continue
+            try:
+                log.debug("TTS synthesising: %s", sentence[:40])
+                pcm_out, sr = await tts.synthesize(sentence)
+                log.debug("TTS playing %d samples", len(pcm_out))
+                _speaking.set()
+                await audio.play(pcm_out, sr)
+                log.debug("TTS done")
+            except Exception as e:
+                log.error("TTS consumer error: %s", e, exc_info=True)
+            finally:
+                _speaking.clear()
+                _tts_queue.task_done()
+
+    async def _speak_direct(text: str) -> None:
+        """Synthesise and play a fixed phrase without going through the LLM."""
         try:
-            pcm_out, sr = await tts.synthesize(sentence)
+            log.debug("speak_direct: %s", text[:40])
+            pcm_out, sr = await tts.synthesize(text)
             _speaking.set()
             await audio.play(pcm_out, sr)
+            log.debug("speak_direct done")
         except Exception as e:
-            log.warning("TTS error: %s", e)
+            log.error("speak_direct error: %s", e, exc_info=True)
         finally:
             _speaking.clear()
 
+    def _drain_tts_queue() -> None:
+        while not _tts_queue.empty():
+            try:
+                _tts_queue.get_nowait()
+                _tts_queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+
     async def _stream_and_speak(text: str) -> str:
-        tts_tasks: list[asyncio.Task] = []
         _interrupt.clear()
+        _drain_tts_queue()
+        consumer = asyncio.create_task(_tts_consumer())
 
         async def _on_sentence(s: str) -> None:
             if not _interrupt.is_set():
-                t = asyncio.create_task(_speak(s))
-                tts_tasks.append(t)
+                await _tts_queue.put(s)
 
         reply = await _ask_claude(text, sentence_cb=_on_sentence)
-
-        # wait for all queued TTS to finish (unless interrupted)
-        for t in tts_tasks:
-            if not _interrupt.is_set():
-                await t
-            else:
-                t.cancel()
-
+        await _tts_queue.put(None)
+        await consumer
         return reply
 
     async def _respond(text: str) -> str:
-        reply = await _stream_and_speak(text)
-        return reply
+        return await _stream_and_speak(text)
+
+    async def _mic_loop(stop_event: asyncio.Event) -> None:
+        """Single mic owner. Handles both normal recording and interrupt detection.
+
+        During silence: VAD-gate frames → emit complete utterances to _captured.
+        During playback: watch for user voice → interrupt Jarvis, then collect utterance.
+        """
+        import sounddevice as sd
+        import queue as _queue
+        import webrtcvad
+
+        sr = settings.sample_rate
+        frame_ms = 30
+        frame_samples = int(sr * frame_ms / 1000)
+        silence_frames = max(1, settings.silence_ms // frame_ms)
+        min_frames = max(1, settings.min_utterance_ms // frame_ms)
+        max_frames = max(min_frames, settings.max_utterance_ms // frame_ms)
+
+        SPEECH_RMS = 0.006    # trigger: onset threshold
+        SILENCE_RMS = 0.003   # end-of-utterance threshold
+        MIN_UTT_RMS = 0.003   # reject whole utterance below this (pure noise floor)
+        ECHO_MUTE_FRAMES = 17 # frames (~500ms) to discard after playback ends
+
+        vad = webrtcvad.Vad(settings.vad_aggressiveness)
+        raw_q: _queue.Queue[np.ndarray] = _queue.Queue()
+
+        def _cb(indata, *_):
+            raw_q.put(indata[:, 0].copy())
+
+        loop = asyncio.get_running_loop()
+
+        # State machine
+        triggered = False
+        trailing_silence = 0
+        total_frames = 0
+        collecting: list[np.ndarray] = []
+        was_playing = False
+        echo_mute = 0
+
+        with sd.InputStream(samplerate=sr, channels=1, dtype="int16",
+                            blocksize=frame_samples, device=None, callback=_cb):
+            while not stop_event.is_set():
+                try:
+                    frame = await loop.run_in_executor(None, lambda: raw_q.get(timeout=0.1))
+                except Exception:
+                    continue
+
+                if len(frame) < frame_samples:
+                    continue
+                frame = frame[:frame_samples]
+                frame_rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
+
+                playing_now = _speaking.is_set() or audio._is_playing
+
+                # Falling edge: playback just ended → arm echo mute window
+                if was_playing and not playing_now:
+                    echo_mute = ECHO_MUTE_FRAMES
+                    triggered = False
+                    collecting = []
+                    total_frames = 0
+                    trailing_silence = 0
+                was_playing = playing_now
+
+                # Discard all mic input while Jarvis is playing — he hears himself
+                if playing_now:
+                    continue
+
+                # Discard echo tail right after playback
+                if echo_mute > 0:
+                    echo_mute -= 1
+                    continue
+
+                # ── Silent mode: normal VAD recording ───────────────────────
+                try:
+                    vad_speech = vad.is_speech(frame.tobytes(), sr)
+                except Exception:
+                    vad_speech = False
+                # Require energy above threshold to trigger (webrtcvad alone fires on noise)
+                is_speech = frame_rms > SPEECH_RMS
+                is_silence = frame_rms < SILENCE_RMS
+
+                if triggered:
+                    collecting.append(frame)
+                    total_frames += 1
+                    if is_speech:
+                        trailing_silence = 0
+                    else:
+                        trailing_silence += 1
+                    if (trailing_silence >= silence_frames and total_frames >= min_frames) \
+                            or total_frames >= max_frames:
+                        pcm = np.concatenate(collecting)
+                        utt_rms = float(np.sqrt(np.mean((pcm.astype(np.float32) / 32768.0) ** 2)))
+                        triggered = False
+                        collecting = []
+                        total_frames = 0
+                        trailing_silence = 0
+                        # Only send to STT if loud enough to be real speech
+                        if utt_rms >= MIN_UTT_RMS:
+                            await _captured.put(pcm)
+                else:
+                    if is_speech:
+                        triggered = True
+                        collecting = [frame]
+                        total_frames = 1
+                        trailing_silence = 0
 
     bridge = TelegramBridge(settings, _respond)
     await bridge.start()
@@ -183,16 +318,17 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
-    # state: sleeping = waiting for wake phrase
     sleeping = True
-
     console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] to wake me. Ctrl-C to quit.")
+
+    watcher_task = asyncio.create_task(_mic_loop(stop))
 
     try:
         while not stop.is_set():
-            pcm = await audio.record_utterance()
+            pcm = await _captured.get()
             if pcm.size == 0:
                 continue
+
             text = await stt.transcribe(pcm, settings.sample_rate)
             if not text:
                 continue
@@ -201,23 +337,19 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             console.print(f"[dim]you[/dim]: {text}")
 
             if sleeping:
-                console.print(f"[dim](sleeping) heard: '{text}'[/dim]")
                 if _is_wake(text):
                     sleeping = False
                     console.print("[bold green]Jarvis[/]: [yellow]Online, Sir.[/]")
                     await audio.play_boot_sound()
-                    asyncio.ensure_future(_stream_and_speak("Welcome Sir, what are we doing now?"))
+                    await _speak_direct("Welcome Sir, what are we doing now?")
+                else:
+                    console.print(f"[dim](sleeping) heard: '{text}'[/dim]")
                 continue
-
-            # check interrupt: if speaking and user said something, stop audio
-            if _speaking.is_set():
-                _interrupt.set()
-                audio.stop()
 
             if _is_sleep(text):
                 sleeping = True
                 console.print("[bold green]Jarvis[/]: [dim]Going to sleep.[/]")
-                asyncio.ensure_future(_stream_and_speak("Going to sleep, Sir. Call me when you need me."))
+                await _speak_direct("Going to sleep, Sir. Call me when you need me.")
                 await audio.play_sleep_sound()
                 continue
 
@@ -226,8 +358,11 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             console.print(reply)
 
     finally:
-        if _claude_proc and _claude_proc.returncode is None:
-            _claude_proc.terminate()
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
         for t in monitor_tasks:
             t.cancel()
         await bridge.stop()
@@ -442,6 +577,148 @@ def auth_google(
     except Exception as e:
         console.print(f"[red]Auth failed: {e}[/red]")
         raise typer.Exit(1)
+
+
+# ----- service management (launchd) -----
+
+_PLIST_LABEL = "ai.maiolabs.jarvis"
+_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{_PLIST_LABEL}.plist"
+_LOG_DIR = Path.home() / "Library" / "Logs" / "Jarvis"
+_JARVIS_BIN = Path(__file__).parent.parent / ".venv" / "bin" / "jarvis"
+_PROJECT_DIR = Path(__file__).parent.parent
+
+
+def _plist_content() -> str:
+    log_out = _LOG_DIR / "jarvis.log"
+    log_err = _LOG_DIR / "jarvis-error.log"
+    # Inherit PATH so `claude` binary is found at runtime
+    import os
+    path_env = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin")
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{_PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{_JARVIS_BIN}</string>
+        <string>voice</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{_PROJECT_DIR}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{path_env}</string>
+        <key>HOME</key>
+        <string>{Path.home()}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{log_out}</string>
+    <key>StandardErrorPath</key>
+    <string>{log_err}</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
+"""
+
+
+def _launchctl(*args: str) -> tuple[int, str]:
+    import subprocess
+    r = subprocess.run(["launchctl", *args], capture_output=True, text=True)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+@app.command()
+def start(
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Install and start Jarvis as a macOS background service (auto-starts on login)."""
+    from pathlib import Path
+
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _PLIST_PATH.write_text(_plist_content())
+    console.print(f"[dim]Plist written to {_PLIST_PATH}[/dim]")
+
+    # Unload first in case an old version is loaded
+    _launchctl("unload", str(_PLIST_PATH))
+
+    rc, out = _launchctl("load", "-w", str(_PLIST_PATH))
+    if rc != 0:
+        console.print(f"[red]Failed to load service:[/red] {out}")
+        raise typer.Exit(1)
+
+    console.print("[bold green]Jarvis service started.[/] It will restart automatically on login.")
+    console.print(f"Logs: [dim]{_LOG_DIR}/jarvis.log[/dim]")
+
+
+@app.command()
+def stop() -> None:
+    """Stop the Jarvis background service."""
+    if not _PLIST_PATH.exists():
+        console.print("[yellow]Jarvis service is not installed.[/yellow]")
+        raise typer.Exit(0)
+
+    rc, out = _launchctl("unload", "-w", str(_PLIST_PATH))
+    if rc != 0:
+        console.print(f"[red]Failed to stop service:[/red] {out}")
+        raise typer.Exit(1)
+
+    console.print("[bold]Jarvis service stopped.[/] Run [cyan]jarvis start[/cyan] to restart.")
+
+
+@app.command()
+def status() -> None:
+    """Show whether the Jarvis service is running."""
+    import subprocess
+
+    if not _PLIST_PATH.exists():
+        console.print("[yellow]Not installed.[/yellow] Run [cyan]jarvis start[/cyan] to install.")
+        raise typer.Exit(0)
+
+    rc, out = _launchctl("list", _PLIST_LABEL)
+    if rc != 0 or "Could not find service" in out:
+        console.print("[red]● Jarvis[/red] — stopped (not loaded)")
+        raise typer.Exit(0)
+
+    # Parse PID and last exit code from launchctl list output
+    pid, last_exit = None, None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith('"PID"'):
+            pid = line.split("=")[-1].strip().rstrip(";").strip('"')
+        elif line.startswith('"LastExitStatus"'):
+            last_exit = line.split("=")[-1].strip().rstrip(";").strip('"')
+
+    if pid and pid != "0":
+        console.print(f"[bold green]● Jarvis[/bold green] — running (PID {pid})")
+    else:
+        exit_info = f", last exit {last_exit}" if last_exit and last_exit != "0" else ""
+        console.print(f"[red]● Jarvis[/red] — not running{exit_info}")
+
+    console.print(f"[dim]Logs: {_LOG_DIR}/jarvis.log[/dim]")
+    # Show last 5 log lines
+    log_file = _LOG_DIR / "jarvis.log"
+    if log_file.exists():
+        lines = log_file.read_text().splitlines()[-5:]
+        if lines:
+            console.print("\n[dim]— recent log —[/dim]")
+            for l in lines:
+                console.print(f"[dim]{l}[/dim]")
+
+
+@app.command()
+def restart() -> None:
+    """Restart the Jarvis background service."""
+    stop()
+    start()
 
 
 if __name__ == "__main__":

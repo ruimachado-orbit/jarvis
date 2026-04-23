@@ -26,9 +26,11 @@ class Settings(BaseSettings):
     stt_compute_type: str = "int8"
     stt_language: str = "en"
 
-    # TTS (Kokoro)
+    # TTS
+    tts_engine: str = "csm"
     tts_voice: str = "af_heart"
     tts_speed: float = 1.0
+    tts_max_audio_ms: int = 15000
 
     # Audio
     input_device: str | None = None

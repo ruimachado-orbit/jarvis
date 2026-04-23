@@ -56,8 +56,9 @@ class STT:
                 audio,
                 language=self.settings.stt_language,
                 vad_filter=False,
-                beam_size=1,
-                no_speech_threshold=0.6,
+                beam_size=5,
+                no_speech_threshold=0.9,
+                condition_on_previous_text=False,
             )
             return " ".join(seg.text.strip() for seg in segments).strip()
 

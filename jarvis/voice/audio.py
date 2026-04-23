@@ -61,7 +61,8 @@ class AudioIO:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._playback_lock = asyncio.Lock()
-        self._input_device: int | None = None  # resolved at first use
+        self._is_playing: bool = False
+        self._stop_flag: bool = False
 
     # ----- recording -----
 
@@ -92,30 +93,9 @@ class AudioIO:
         # Use system default device — no hardcoding
         dev = None
 
-        # Calibrate noise floor: sample 0.5s of ambient audio to set adaptive thresholds
-        noise_rms = 0.002
-        try:
-            _cal_q: queue.Queue[np.ndarray] = queue.Queue()
-            def _cal_cb(indata, *_): _cal_q.put(indata[:, 0].copy())
-            cal_frames: list[np.ndarray] = []
-            with sd.InputStream(samplerate=sr, channels=1, dtype="int16",
-                                blocksize=frame_samples, device=dev, callback=_cal_cb):
-                for _ in range(int(0.5 * sr / frame_samples)):
-                    try:
-                        cal_frames.append(_cal_q.get(timeout=1.0))
-                    except Exception:
-                        break
-            if cal_frames:
-                cal = np.concatenate(cal_frames).astype(np.float32) / 32768.0
-                noise_rms = float(np.sqrt(np.mean(cal ** 2)))
-                log.debug("noise floor rms=%.4f", noise_rms)
-        except Exception as e:
-            log.debug("noise calibration failed: %s", e)
-
-        # Speech threshold: 4× noise floor, minimum 0.003
-        SPEECH_RMS = max(0.003, noise_rms * 4.0)
-        SILENCE_RMS = max(0.002, noise_rms * 2.0)
-        log.debug("thresholds: speech=%.4f silence=%.4f", SPEECH_RMS, SILENCE_RMS)
+        # Energy thresholds — webrtcvad OR energy triggers speech
+        SPEECH_RMS = 0.008   # energy trigger threshold
+        SILENCE_RMS = 0.003  # end-of-utterance silence threshold
 
         with sd.InputStream(
             samplerate=sr,
@@ -134,9 +114,10 @@ class AudioIO:
                 frame_rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
 
                 try:
-                    is_speech = vad.is_speech(frame.tobytes(), sr) or frame_rms > SPEECH_RMS
+                    vad_speech = vad.is_speech(frame.tobytes(), sr)
                 except Exception:
-                    is_speech = frame_rms > SPEECH_RMS
+                    vad_speech = False
+                is_speech = vad_speech or frame_rms > SPEECH_RMS
 
                 is_silence = frame_rms < SILENCE_RMS
 
@@ -193,7 +174,12 @@ class AudioIO:
         boot = np.concatenate([crackle, hum, _silence(0.05), blips, chord * 0.7, _silence(0.02), ping])
         boot = np.clip(boot, -1, 1).astype(np.float32)
 
-        await asyncio.to_thread(lambda: (sd.play(boot, sr, device=self._output_device()), sd.wait()))
+        self._is_playing = True
+        try:
+            await asyncio.to_thread(self._play_array, boot, sr)
+        finally:
+            await asyncio.sleep(0.25)
+            self._is_playing = False
 
     async def play_sleep_sound(self) -> None:
         """Play power-down chime."""
@@ -213,7 +199,6 @@ class AudioIO:
         def _silence(dur):
             return np.zeros(int(sr * dur))
 
-        # descending tones + fade out hum
         down = np.concatenate([
             _tone(659, 0.08), _silence(0.02),
             _tone(494, 0.08), _silence(0.02),
@@ -224,15 +209,36 @@ class AudioIO:
         sleep_snd = np.concatenate([down, hum_down])
         sleep_snd = np.clip(sleep_snd, -1, 1).astype(np.float32)
 
-        await asyncio.to_thread(lambda: (sd.play(sleep_snd, sr, device=self._output_device()), sd.wait()))
+        self._is_playing = True
+        try:
+            await asyncio.to_thread(self._play_array, sleep_snd, sr)
+        finally:
+            await asyncio.sleep(0.25)
+            self._is_playing = False
+
+    def _play_array(self, audio_f32: np.ndarray, sample_rate: int) -> None:
+        """Play audio, polling _stop_flag every 50 ms so playback can be aborted."""
+        import threading
+
+        import sounddevice as sd
+
+        done = threading.Event()
+
+        def _run() -> None:
+            sd.play(audio_f32, samplerate=sample_rate, device=self._output_device())
+            sd.wait()
+            done.set()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        while not done.wait(timeout=0.05):
+            if self._stop_flag:
+                sd.stop()
+                break
 
     def stop(self) -> None:
-        """Stop current playback immediately."""
-        try:
-            import sounddevice as sd
-            sd.stop()
-        except Exception:
-            pass
+        """Stop current playback immediately without touching the input stream."""
+        self._stop_flag = True
 
     def _output_device(self):
         dev = self.settings.output_device or None
@@ -243,19 +249,17 @@ class AudioIO:
     async def play(self, pcm: np.ndarray, sample_rate: int) -> None:
         if pcm.size == 0:
             return
-        import sounddevice as sd
 
         async with self._playback_lock:
-            def _run() -> None:
-                sd.play(
-                    pcm,
-                    samplerate=sample_rate,
-                    device=self._output_device(),
-                    blocking=True,
-                )
-                sd.wait()
-
-            await asyncio.to_thread(_run)
+            self._is_playing = True
+            self._stop_flag = False
+            try:
+                audio_f32 = pcm.astype(np.float32) / 32768.0
+                await asyncio.to_thread(self._play_array, audio_f32, sample_rate)
+            finally:
+                await asyncio.sleep(0.25)
+                self._is_playing = False
+                self._stop_flag = False
 
     async def play_queue(self, clips: AsyncIterator[tuple[np.ndarray, int]]) -> None:
         """Play clips serially so sentences come out in order."""

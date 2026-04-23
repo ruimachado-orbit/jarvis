@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anthropic
 
@@ -78,21 +78,29 @@ async def think_node(
 
     tool_calls = []
     text_content = ""
+    content_blocks = []
     for block in response.content:
         if block.type == "text":
             text_content += block.text
+            content_blocks.append({"type": "text", "text": block.text})
         elif block.type == "tool_use":
             tool_calls.append({
                 "id": block.id,
                 "name": block.name,
                 "args": block.input,
             })
+            content_blocks.append({
+                "type": "tool_use",
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            })
 
     # Build assistant message in Anthropic format (content is list of blocks)
     new_messages = list(state["messages"])
     new_messages.append({
         "role": "assistant",
-        "content": response.content,
+        "content": content_blocks,
     })
 
     requires_confirmation = any(tc["name"] in CONFIRMATION_REQUIRED_TOOLS for tc in tool_calls)
@@ -145,8 +153,12 @@ def respond_node(state: AgentState) -> dict[str, Any]:
 
     content = last_assistant.get("content", "")
     if isinstance(content, list):
-        # Anthropic content blocks — extract text
-        text = " ".join(b.text for b in content if hasattr(b, "text"))
+        # Plain dicts from converted content blocks
+        text = " ".join(
+            b.get("text", "") if isinstance(b, dict) else (b.text if hasattr(b, "text") else "")
+            for b in content
+            if (b.get("type") == "text" if isinstance(b, dict) else getattr(b, "type", "") == "text")
+        )
     else:
         text = str(content)
     return {"final_response": text.strip()}
@@ -156,15 +168,11 @@ def store_memory_node(state: AgentState, mem0_store: Mem0Store | None) -> dict[s
     if mem0_store is None:
         return {}
     last_user = next(
-        (m["content"] for m in state["messages"] if m["role"] == "user" and isinstance(m.get("content"), str)),
+        (m["content"] for m in reversed(state["messages"]) if m["role"] == "user" and isinstance(m.get("content"), str)),
         None,
     )
     if last_user:
         mem0_store.store(last_user, role="user")
     if state.get("final_response"):
         mem0_store.store(state["final_response"], role="assistant")
-    return {}
-
-
-def route_node(state: AgentState) -> dict[str, Any]:
     return {}

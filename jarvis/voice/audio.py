@@ -254,7 +254,12 @@ class AudioIO:
             self._is_playing = True
             self._stop_flag = False
             try:
-                audio_f32 = pcm.astype(np.float32) / 32768.0
+                # CSM TTS returns float in [-1, 1]; raw mic capture is int16.
+                # Only scale when the dtype is integer.
+                if np.issubdtype(pcm.dtype, np.floating):
+                    audio_f32 = pcm.astype(np.float32)
+                else:
+                    audio_f32 = pcm.astype(np.float32) / 32768.0
                 await asyncio.to_thread(self._play_array, audio_f32, sample_rate)
             finally:
                 await asyncio.sleep(0.25)

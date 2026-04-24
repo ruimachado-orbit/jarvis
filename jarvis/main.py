@@ -145,6 +145,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                 await audio.play(pcm_out, sr)
                 log.debug("TTS done")
             except Exception as e:
+                console.print(f"[red]TTS failed:[/red] {e}")
                 log.error("TTS consumer error: %s", e, exc_info=True)
             finally:
                 _speaking.clear()
@@ -159,6 +160,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             await audio.play(pcm_out, sr)
             log.debug("speak_direct done")
         except Exception as e:
+            console.print(f"[red]TTS failed:[/red] {e}")
             log.error("speak_direct error: %s", e, exc_info=True)
         finally:
             _speaking.clear()
@@ -339,17 +341,17 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             if sleeping:
                 if _is_wake(text):
                     sleeping = False
-                    console.print("[bold green]Jarvis[/]: [yellow]Online, Sir.[/]")
+                    console.print("[bold green]Jarvis[/]: [yellow]At your service, Sir.[/]")
                     await audio.play_boot_sound()
-                    await _speak_direct("Welcome Sir, what are we doing now?")
+                    await _speak_direct("At your service, Sir. How may I be of assistance?")
                 else:
                     console.print(f"[dim](sleeping) heard: '{text}'[/dim]")
                 continue
 
             if _is_sleep(text):
                 sleeping = True
-                console.print("[bold green]Jarvis[/]: [dim]Going to sleep.[/]")
-                await _speak_direct("Going to sleep, Sir. Call me when you need me.")
+                console.print("[bold green]Jarvis[/]: [dim]Powering down.[/]")
+                await _speak_direct("Very good, Sir. Powering down. Do call if you need me.")
                 await audio.play_sleep_sound()
                 continue
 

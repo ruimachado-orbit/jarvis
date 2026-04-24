@@ -1,33 +1,64 @@
-.PHONY: init dev voice chat ask telegram watch notify test auth-google memory-show memory-reset csm-install
+.PHONY: init dev voice chat ask telegram watch notify test auth-google memory-show memory-reset csm-install ensure-venv
 
 init:
-	python -m venv .venv
+	@PY=python3; command -v $$PY >/dev/null 2>&1 || PY=python; \
+	$$PY -m venv .venv && \
 	.venv/bin/pip install -e '.[dev,wake]'
 	cp -n .env.example .env || true
 	@echo "Edit .env and set ANTHROPIC_API_KEY, then run: make auth-google"
 
-csm-install:
-	@echo "Installing CSM 1B TTS (Sesame)..."
-	@if [ -z "$$HF_TOKEN" ]; then echo "Set HF_TOKEN first: export HF_TOKEN=hf_..."; exit 1; fi
-	.venv/bin/pip install torch torchaudio
-	git clone --depth 1 https://github.com/SesameAILabs/csm.git /tmp/csm
-	cp /tmp/csm/generator.py jarvis/voice/csm_generator.py
-	cp /tmp/csm/models.py jarvis/voice/csm_models.py
-	cp /tmp/csm/watermarking.py jarvis/voice/csm_watermarking.py
-	rm -rf /tmp/csm
-	@echo "CSM installed. Run: huggingface-cli login && make dev"
-
-dev:
-	@if [ ! -f jarvis/voice/csm_generator.py ]; then \
-		echo "CSM not installed. Running make csm-install first..."; \
-		make csm-install; \
+# Create .venv and install deps when missing (same as init, without clobbering .env).
+ensure-venv:
+	@if [ ! -f .env ] && [ -f .env.example ]; then \
+		cp .env.example .env; \
+		echo "Created .env from .env.example — set API keys as needed."; \
 	fi
-	@if [ -z "$$HF_TOKEN" ]; then \
-		echo "Set HF_TOKEN to download CSM model weights:"; \
-		echo "  export HF_TOKEN=hf_..."; \
-		echo "Then run: huggingface-cli login && make dev"; \
+	@if [ ! -x .venv/bin/python ]; then \
+		echo "Creating virtual environment and installing dependencies..."; \
+		PY=python3; command -v $$PY >/dev/null 2>&1 || PY=python; \
+		$$PY -m venv .venv && \
+		.venv/bin/pip install -e '.[dev,wake]'; \
+	fi
+
+# HF_TOKEN from the environment, else first ^HF_TOKEN= line in .env (do not `source` .env — values may be dotenv-only, e.g. spaces).
+load_hf_token = if [ -z "$$HF_TOKEN" ] && [ -f .env ]; then \
+	HF_TOKEN=$$(grep '^HF_TOKEN=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed "s/^[\"']//;s/[\"']$$//"); \
+	export HF_TOKEN; \
+	fi
+
+# CSM needs both the vendored .py generator and the pip deps. A prior install
+# may have left one without the other (generator.py is tracked in git), so
+# csm-install installs missing pip deps and only re-clones when the .py files
+# are absent.
+csm-install: ensure-venv
+	@echo "Installing CSM 1B TTS (Sesame)..."
+	@$(load_hf_token); \
+	if [ -z "$$HF_TOKEN" ]; then \
+		echo "Set HF_TOKEN in .env or export HF_TOKEN=hf_..."; \
 		exit 1; \
 	fi
+	.venv/bin/pip install torch torchaudio 'transformers>=4.52.1'
+	@if [ ! -f jarvis/voice/csm_generator.py ]; then \
+		git clone --depth 1 https://github.com/SesameAILabs/csm.git /tmp/csm && \
+		cp /tmp/csm/generator.py jarvis/voice/csm_generator.py && \
+		cp /tmp/csm/models.py jarvis/voice/csm_models.py && \
+		cp /tmp/csm/watermarking.py jarvis/voice/csm_watermarking.py && \
+		rm -rf /tmp/csm; \
+	fi
+	@echo "CSM installed. Run: huggingface-cli login && make dev"
+
+dev: ensure-venv
+	@$(load_hf_token); \
+	if [ ! -f jarvis/voice/csm_generator.py ] \
+	   || ! .venv/bin/python -c "import torch, torchaudio, transformers" >/dev/null 2>&1; then \
+		echo "CSM not installed. Running make csm-install first..."; \
+		$(MAKE) csm-install; \
+	fi; \
+	if [ -z "$$HF_TOKEN" ]; then \
+		echo "Set HF_TOKEN in .env (or export it) to download CSM model weights."; \
+		echo "Then run: huggingface-cli login && make dev"; \
+		exit 1; \
+	fi; \
 	.venv/bin/python -m jarvis voice
 
 voice:

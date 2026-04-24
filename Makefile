@@ -26,10 +26,8 @@ load_hf_token = if [ -z "$$HF_TOKEN" ] && [ -f .env ]; then \
 	export HF_TOKEN; \
 	fi
 
-# CSM needs both the vendored .py generator and the pip deps. A prior install
-# may have left one without the other (generator.py is tracked in git), so
-# csm-install installs missing pip deps and only re-clones when the .py files
-# are absent.
+# CSM 1B via transformers' native CsmForConditionalGeneration — no vendored
+# repo files required.
 csm-install: ensure-venv
 	@echo "Installing CSM 1B TTS (Sesame)..."
 	@$(load_hf_token); \
@@ -38,19 +36,11 @@ csm-install: ensure-venv
 		exit 1; \
 	fi
 	.venv/bin/pip install torch torchaudio 'transformers>=4.52.1'
-	@if [ ! -f jarvis/voice/csm_generator.py ]; then \
-		git clone --depth 1 https://github.com/SesameAILabs/csm.git /tmp/csm && \
-		cp /tmp/csm/generator.py jarvis/voice/csm_generator.py && \
-		cp /tmp/csm/models.py jarvis/voice/csm_models.py && \
-		cp /tmp/csm/watermarking.py jarvis/voice/csm_watermarking.py && \
-		rm -rf /tmp/csm; \
-	fi
-	@echo "CSM installed. Run: huggingface-cli login && make dev"
+	@echo "CSM deps installed. Run: huggingface-cli login && make dev"
 
 dev: ensure-venv
 	@$(load_hf_token); \
-	if [ ! -f jarvis/voice/csm_generator.py ] \
-	   || ! .venv/bin/python -c "import torch, torchaudio, transformers" >/dev/null 2>&1; then \
+	if ! .venv/bin/python -c "import torch, torchaudio; from transformers import CsmForConditionalGeneration" >/dev/null 2>&1; then \
 		echo "CSM not installed. Running make csm-install first..."; \
 		$(MAKE) csm-install; \
 	fi; \

@@ -228,8 +228,15 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
         was_playing = False
         echo_mute = 0
 
+        # settings.input_device accepts a device index ("3") or a substring
+        # ("Anker PowerConf C200") — sounddevice resolves both. None → system default.
+        dev: int | str | None = settings.input_device or None
+        if isinstance(dev, str) and dev.isdigit():
+            dev = int(dev)
+        log.info("mic: opening input stream on device=%r", dev)
+
         with sd.InputStream(samplerate=sr, channels=1, dtype="int16",
-                            blocksize=frame_samples, device=None, callback=_cb):
+                            blocksize=frame_samples, device=dev, callback=_cb):
             while not stop_event.is_set():
                 try:
                     frame = await loop.run_in_executor(None, lambda: raw_q.get(timeout=0.1))

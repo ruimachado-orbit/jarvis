@@ -16,47 +16,6 @@ log = logging.getLogger(__name__)
 FRAME_MS = 30  # webrtcvad only accepts 10/20/30 ms frames
 
 
-def _pick_input_device() -> int | None:
-    """Return the best available input device index, or None for system default."""
-    import sounddevice as sd
-    devices = sd.query_devices()
-    default_in = sd.default.device[0] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
-
-    # Priority: default first, then any device with input channels
-    # Test each by sampling 0.1s and checking RMS > noise floor
-    candidates = [default_in] + [
-        i for i, d in enumerate(devices)
-        if d["max_input_channels"] > 0 and i != default_in
-    ]
-
-    import queue as _queue
-    for dev_id in candidates:
-        try:
-            q: _queue.Queue = _queue.Queue()
-            sr = 16000
-            blocksize = 480
-
-            def _cb(indata, *_):
-                q.put(indata[:, 0].copy())
-
-            with sd.InputStream(samplerate=sr, channels=1, dtype="int16",
-                                blocksize=blocksize, device=dev_id, callback=_cb):
-                frames = [q.get() for _ in range(6)]  # ~0.18s
-
-            import numpy as np
-            pcm = np.concatenate(frames).astype(np.float32) / 32768.0
-            rms = float(np.sqrt(np.mean(pcm ** 2)))
-            log.debug("device [%d] RMS=%.4f", dev_id, rms)
-            if rms > 0.0001:  # not completely silent
-                log.info("auto-selected input device [%d]: %s", dev_id, devices[dev_id]["name"])
-                return dev_id
-        except Exception:
-            continue
-
-    log.warning("no working input device found, using system default")
-    return None
-
-
 class AudioIO:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -119,8 +78,6 @@ class AudioIO:
                     vad_speech = False
                 is_speech = vad_speech or frame_rms > SPEECH_RMS
 
-                is_silence = frame_rms < SILENCE_RMS
-
                 if triggered:
                     collected.append(frame)
                     total_frames += 1
@@ -174,12 +131,15 @@ class AudioIO:
         boot = np.concatenate([crackle, hum, _silence(0.05), blips, chord * 0.7, _silence(0.02), ping])
         boot = np.clip(boot, -1, 1).astype(np.float32)
 
-        self._is_playing = True
-        try:
-            await asyncio.to_thread(self._play_array, boot, sr)
-        finally:
-            await asyncio.sleep(0.25)
-            self._is_playing = False
+        async with self._playback_lock:
+            self._is_playing = True
+            self._stop_flag = False
+            try:
+                await asyncio.to_thread(self._play_array, boot, sr)
+            finally:
+                await asyncio.sleep(0.25)
+                self._is_playing = False
+                self._stop_flag = False
 
     async def play_sleep_sound(self) -> None:
         """Play power-down chime."""
@@ -209,32 +169,31 @@ class AudioIO:
         sleep_snd = np.concatenate([down, hum_down])
         sleep_snd = np.clip(sleep_snd, -1, 1).astype(np.float32)
 
-        self._is_playing = True
-        try:
-            await asyncio.to_thread(self._play_array, sleep_snd, sr)
-        finally:
-            await asyncio.sleep(0.25)
-            self._is_playing = False
+        async with self._playback_lock:
+            self._is_playing = True
+            self._stop_flag = False
+            try:
+                await asyncio.to_thread(self._play_array, sleep_snd, sr)
+            finally:
+                await asyncio.sleep(0.25)
+                self._is_playing = False
+                self._stop_flag = False
 
     def _play_array(self, audio_f32: np.ndarray, sample_rate: int) -> None:
-        """Play audio, polling _stop_flag every 50 ms so playback can be aborted."""
-        import threading
+        """Play audio on the sd convenience stream, polling _stop_flag every 50 ms."""
+        import time
 
         import sounddevice as sd
 
-        done = threading.Event()
-
-        def _run() -> None:
-            sd.play(audio_f32, samplerate=sample_rate, device=self._output_device())
-            sd.wait()
-            done.set()
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        while not done.wait(timeout=0.05):
+        # sd.play() uses the global convenience output stream (separate from the
+        # named InputStream used for mic recording), so sd.stop() here only stops
+        # this output stream and does not affect microphone capture.
+        sd.play(audio_f32, samplerate=sample_rate, device=self._output_device())
+        while sd.get_stream().active:
             if self._stop_flag:
                 sd.stop()
-                break
+                return
+            time.sleep(0.05)
 
     def stop(self) -> None:
         """Stop current playback immediately without touching the input stream."""
@@ -254,7 +213,10 @@ class AudioIO:
             self._is_playing = True
             self._stop_flag = False
             try:
-                audio_f32 = pcm.astype(np.float32) / 32768.0
+                if pcm.dtype == np.float32 or pcm.dtype == np.float64:
+                    audio_f32 = pcm.astype(np.float32)
+                else:
+                    audio_f32 = pcm.astype(np.float32) / 32768.0
                 await asyncio.to_thread(self._play_array, audio_f32, sample_rate)
             finally:
                 await asyncio.sleep(0.25)

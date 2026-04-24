@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     watch_command: str | None = None
     watch_debounce_ms: int = 400
 
+    @field_validator("stt_device", "stt_model", "stt_compute_type", "stt_language",
+                     "tts_engine", "tts_voice", "llm_model", mode="before")
+    @classmethod
+    def strip_str(cls, v: object) -> object:
+        if isinstance(v, str):
+            return v.split("#")[0].strip()
+        return v
+
     @field_validator("google_credentials", "google_token", "mem0_path", "workspace", mode="before")
     @classmethod
     def expand_path(cls, v: object) -> object:

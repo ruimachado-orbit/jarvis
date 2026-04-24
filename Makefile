@@ -1,5 +1,9 @@
 .PHONY: init dev voice chat ask telegram watch notify test auth-google memory-show memory-reset csm-install
 
+# Auto-load .env if present
+-include .env
+export
+
 init:
 	python -m venv .venv
 	.venv/bin/pip install -e '.[dev,wake]'
@@ -8,26 +12,30 @@ init:
 
 csm-install:
 	@echo "Installing CSM 1B TTS (Sesame)..."
-	@if [ -z "$$HF_TOKEN" ]; then echo "Set HF_TOKEN first: export HF_TOKEN=hf_..."; exit 1; fi
+	@if [ -z "$$HF_TOKEN" ]; then echo "Set HF_TOKEN first in .env: HF_TOKEN=hf_..."; exit 1; fi
 	.venv/bin/pip install torch torchaudio
-	git clone --depth 1 https://github.com/SesameAILabs/csm.git /tmp/csm
-	cp /tmp/csm/generator.py jarvis/voice/csm_generator.py
-	cp /tmp/csm/models.py jarvis/voice/csm_models.py
-	cp /tmp/csm/watermarking.py jarvis/voice/csm_watermarking.py
-	rm -rf /tmp/csm
-	@echo "CSM installed. Run: huggingface-cli login && make dev"
+	.venv/bin/pip install transformers>=4.52.1 moshi tokenizers huggingface_hub torchtune silentcipher
+	.venv/bin/huggingface-cli login --token "$$HF_TOKEN"
+	@if [ ! -f jarvis/voice/csm_generator.py ]; then \
+		git clone --depth 1 https://github.com/SesameAILabs/csm.git /tmp/csm && \
+		cp /tmp/csm/generator.py jarvis/voice/csm_generator.py && \
+		cp /tmp/csm/models.py jarvis/voice/csm_models.py && \
+		cp /tmp/csm/watermarking.py jarvis/voice/csm_watermarking.py && \
+		rm -rf /tmp/csm; \
+	fi
+	@echo "CSM installed."
 
 dev:
 	@if [ ! -f jarvis/voice/csm_generator.py ]; then \
 		echo "CSM not installed. Running make csm-install first..."; \
-		make csm-install; \
+		$(MAKE) csm-install; \
 	fi
 	@if [ -z "$$HF_TOKEN" ]; then \
-		echo "Set HF_TOKEN to download CSM model weights:"; \
-		echo "  export HF_TOKEN=hf_..."; \
-		echo "Then run: huggingface-cli login && make dev"; \
+		echo "Set HF_TOKEN in .env: HF_TOKEN=hf_..."; \
 		exit 1; \
 	fi
+	@.venv/bin/python -c "import transformers, moshi, torchtune, silentcipher" 2>/dev/null || \
+		(echo "CSM Python deps missing, installing..." && $(MAKE) csm-install)
 	.venv/bin/python -m jarvis voice
 
 voice:

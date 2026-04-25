@@ -1,4 +1,4 @@
-.PHONY: init dev voice chat ask telegram watch notify test auth-google memory-show memory-reset csm-install ensure-venv
+.PHONY: init dev voice chat ask telegram watch notify test auth-google memory-show memory-reset csm-install ensure-venv kill-zombies
 
 init:
 	@PY=python3; command -v $$PY >/dev/null 2>&1 || PY=python; \
@@ -38,7 +38,16 @@ csm-install: ensure-venv
 	.venv/bin/pip install torch torchaudio 'transformers>=4.52.1'
 	@echo "CSM deps installed. Run: huggingface-cli login && make dev"
 
-dev: ensure-venv
+# Stopped (Ctrl-Z'd) jarvis voice processes hold the macOS mic + speaker
+# handles and silently break the next session. Force-kill before each dev run.
+kill-zombies:
+	@if pgrep -f 'jarvis voice' >/dev/null 2>&1; then \
+		echo "Killing lingering jarvis voice processes..."; \
+		pkill -9 -f 'jarvis voice' 2>/dev/null || true; \
+		sleep 0.3; \
+	fi
+
+dev: ensure-venv kill-zombies
 	@$(load_hf_token); \
 	if ! .venv/bin/python -c "import torch, torchaudio; from transformers import CsmForConditionalGeneration" >/dev/null 2>&1; then \
 		echo "CSM not installed. Running make csm-install first..."; \

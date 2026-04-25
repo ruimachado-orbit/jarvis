@@ -8,12 +8,16 @@ from jarvis.voice.tts import TTS
 
 
 @pytest.fixture
-def mock_csm():
+def mock_csm(monkeypatch):
     """Stub _load_csm_generator → (processor, model, device).
 
     - processor.apply_chat_template returns a dict-like with .to(device) echoing itself.
     - model.generate returns a list with a single 1-D float tensor shaped [N].
     """
+    # jarvis.main imports .env values into os.environ at import time; clear any
+    # TTS overrides so Settings(_env_file=None) actually gets the csm defaults.
+    for k in ("JARVIS_TTS_ENGINE", "JARVIS_TTS_VOICE", "JARVIS_TTS_SPEED"):
+        monkeypatch.delenv(k, raising=False)
     with patch("jarvis.voice.tts._load_csm_generator") as mock_load:
         import torch
 

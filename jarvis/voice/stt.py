@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from functools import lru_cache
 
 import numpy as np
@@ -52,14 +53,44 @@ class STT:
             return ""
 
         def _run() -> str:
+            # vad_filter=True → Silero VAD strips non-speech frames before
+            # decode, which eliminates "You" / "Okay. Okay." / "Thanks."
+            # hallucinations on ambient-noise captures.
             segments, info = self._model().transcribe(
                 audio,
                 language=self.settings.stt_language,
-                vad_filter=False,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 300},
                 beam_size=5,
-                no_speech_threshold=0.9,
+                no_speech_threshold=0.6,
                 condition_on_previous_text=False,
             )
-            return " ".join(seg.text.strip() for seg in segments).strip()
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+            if _is_whisper_hallucination(text):
+                log.debug("stt: dropped likely hallucination %r", text)
+                return ""
+            return text
 
         return await asyncio.to_thread(_run)
+
+
+# Known faster-whisper garbage on silent / near-silent input. If the whole
+# transcription is one of these, treat as empty.
+_HALLUCINATIONS = {
+    "you", "okay.", "thanks.", "thank you.", "thank you for watching.",
+    "bye.", ".", "...", "uh", "um",
+}
+
+
+def _is_whisper_hallucination(text: str) -> bool:
+    if not text:
+        return True
+    t = text.lower().strip().rstrip(".").strip()
+    # collapse whitespace and trailing filler so "okay. okay. okay." → "okay"
+    t = re.sub(r"[\s.]+", " ", t).strip()
+    if not t:
+        return True
+    words = t.split()
+    if all(w == words[0] for w in words) and words[0] in {"you", "okay", "yeah", "uh", "um"}:
+        return True
+    return text.lower().strip() in _HALLUCINATIONS

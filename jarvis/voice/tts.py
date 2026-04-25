@@ -1,20 +1,19 @@
-"""Sesame CSM 1B TTS — state-of-the-art conversational speech.
+"""TTS engines: Sesame CSM 1B (preferred) and Kokoro ONNX (fallback).
 
-Uses the native ``transformers`` implementation (``CsmForConditionalGeneration``)
-so we don't have to vendor the CSM repo or depend on ``torchtune`` / ``moshi`` /
-``silentcipher``.
-
-Requirements:
-- transformers >= 4.52.1 (ships the Csm* classes)
-- torch + torchaudio
-- Access to HuggingFace model sesame/csm-1b (``huggingface-cli login`` or ``HF_TOKEN``).
+Engine selected by ``JARVIS_TTS_ENGINE``:
+- ``csm``    → ``transformers.CsmForConditionalGeneration`` (needs HF gated
+                 access to ``sesame/csm-1b`` + ``meta-llama/Llama-3.2-1B``).
+- ``kokoro`` → ``kokoro-onnx`` with local model files under ``kokoro/``.
+                 No network, no gated repos.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 
@@ -22,7 +21,8 @@ from jarvis.core.config import Settings
 
 log = logging.getLogger(__name__)
 
-_SAMPLE_RATE = 24000  # CSM generates at 24 kHz
+_SAMPLE_RATE = 24000  # Both CSM and Kokoro emit 24 kHz
+_PHRASE_CACHE_DIR = Path.home() / ".cache" / "jarvis" / "tts"
 
 
 def _check_csm() -> bool:
@@ -68,20 +68,35 @@ def _load_csm_generator():
     return processor, model, device
 
 
+@lru_cache(maxsize=1)
+def _load_kokoro():
+    """Load Kokoro ONNX model + voices file from ./kokoro/."""
+    from kokoro_onnx import Kokoro
+    base = Path(__file__).resolve().parent.parent.parent
+    model_path = base / "kokoro" / "kokoro-v1.0.onnx"
+    voices_path = base / "kokoro" / "voices-v1.0.bin"
+    if not model_path.exists() or not voices_path.exists():
+        raise RuntimeError(
+            f"Kokoro model files missing. Expected:\n  {model_path}\n  {voices_path}"
+        )
+    log.info("loading Kokoro ONNX from %s", model_path)
+    return Kokoro(str(model_path), str(voices_path))
+
+
 class TTS:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._loaded = False
-        self._speaker = str(int(settings.tts_voice)) if settings.tts_voice.isdigit() else "0"
-        # max_new_tokens ≈ frames of 1920 samples each at 24kHz; 780 tokens ≈ 60s.
-        # Using tts_max_audio_ms: 24000 * ms/1000 / 1920 ≈ ms/80.
-        self._max_new_tokens = max(32, settings.tts_max_audio_ms // 80)
+        self._engine = (settings.tts_engine or "csm").lower()
+        self._voice = settings.tts_voice
         self._speed = settings.tts_speed
+        # CSM-only: map ms → max_new_tokens (1 token ≈ 80 samples at 24 kHz).
+        self._max_new_tokens = max(32, settings.tts_max_audio_ms // 80)
+        self._csm_loaded = False
 
-    def _ensure_loaded(self):
-        if not self._loaded:
+    def _ensure_csm(self):
+        if not self._csm_loaded:
             self._processor, self._model, self._device = _load_csm_generator()
-            self._loaded = True
+            self._csm_loaded = True
         return self._processor, self._model, self._device
 
     async def synthesize(self, text: str) -> tuple[np.ndarray, int]:
@@ -92,13 +107,59 @@ class TTS:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._synthesize_sync, text)
 
+    def _phrase_cache_path(self, phrase: str) -> Path:
+        # Key over engine/voice/speed so a config change invalidates the cache.
+        key = f"{self._engine}|{self._voice}|{self._speed}|{phrase}"
+        h = hashlib.sha1(key.encode()).hexdigest()[:16]
+        return _PHRASE_CACHE_DIR / f"{h}.npz"
+
+    async def prewarm(self, phrases: list[str]) -> dict[str, tuple[np.ndarray, int]]:
+        """Synthesise fixed phrases up-front, caching PCM on disk.
+
+        Returns a dict mapping each phrase → (pcm, sr) that callers can use
+        to skip TTS synthesis at runtime. First run pays the one-time synth
+        cost per phrase; subsequent runs load the cached .npz files instantly.
+        """
+        _PHRASE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache: dict[str, tuple[np.ndarray, int]] = {}
+        for phrase in phrases:
+            if not phrase.strip():
+                continue
+            f = self._phrase_cache_path(phrase)
+            if f.exists():
+                try:
+                    data = np.load(f)
+                    cache[phrase] = (data["pcm"].astype(np.float32), int(data["sr"]))
+                    continue
+                except Exception as e:
+                    log.warning("failed to load %s, resynthesising: %s", f.name, e)
+            pcm, sr = await self.synthesize(phrase)
+            cache[phrase] = (pcm, sr)
+            try:
+                np.savez_compressed(f, pcm=pcm, sr=np.int32(sr))
+            except Exception as e:
+                log.warning("failed to cache %s: %s", f.name, e)
+        return cache
+
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
+        if self._engine == "kokoro":
+            return self._synthesize_kokoro(text)
+        return self._synthesize_csm(text)
+
+    def _synthesize_kokoro(self, text: str) -> tuple[np.ndarray, int]:
+        kokoro = _load_kokoro()
+        voice = self._voice if self._voice and not self._voice.isdigit() else "af_heart"
+        samples, sr = kokoro.create(text, voice=voice, speed=self._speed, lang="en-gb")
+        return samples.astype(np.float32), sr
+
+    def _synthesize_csm(self, text: str) -> tuple[np.ndarray, int]:
         import torch
 
-        processor, model, device = self._ensure_loaded()
+        processor, model, device = self._ensure_csm()
+        speaker = str(int(self._voice)) if self._voice.isdigit() else "0"
 
         conversation = [
-            {"role": self._speaker, "content": [{"type": "text", "text": text}]},
+            {"role": speaker, "content": [{"type": "text", "text": text}]},
         ]
         inputs = processor.apply_chat_template(
             conversation,
@@ -113,7 +174,6 @@ class TTS:
                 max_new_tokens=self._max_new_tokens,
             )
 
-        # ``output_audio=True`` returns a list (batch) of 1-D float tensors at 24 kHz.
         wav = audio[0] if isinstance(audio, (list, tuple)) else audio
         if wav.ndim > 1:
             wav = wav.squeeze(0)

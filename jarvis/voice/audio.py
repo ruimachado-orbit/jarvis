@@ -58,11 +58,35 @@ def _pick_input_device() -> int | None:
 
 
 class AudioIO:
+    # Seconds to keep _is_playing True after sd.wait returns — covers the
+    # hardware tail that the mic would otherwise capture as echo.
+    _TAIL_HOLD_S = 0.25
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._playback_lock = asyncio.Lock()
         self._is_playing: bool = False
         self._stop_flag: bool = False
+        # Deferred task that clears _is_playing after the tail hold. Kept so
+        # back-to-back plays can cancel it and stream without a 250 ms gap.
+        self._tail_clear: asyncio.Task | None = None
+
+    async def _cancel_pending_tail_clear(self) -> None:
+        t = self._tail_clear
+        if t is not None and not t.done():
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+    async def _deferred_clear(self) -> None:
+        try:
+            await asyncio.sleep(self._TAIL_HOLD_S)
+        except asyncio.CancelledError:
+            return
+        self._is_playing = False
+        self._stop_flag = False
 
     # ----- recording -----
 
@@ -174,12 +198,12 @@ class AudioIO:
         boot = np.concatenate([crackle, hum, _silence(0.05), blips, chord * 0.7, _silence(0.02), ping])
         boot = np.clip(boot, -1, 1).astype(np.float32)
 
+        await self._cancel_pending_tail_clear()
         self._is_playing = True
         try:
             await asyncio.to_thread(self._play_array, boot, sr)
         finally:
-            await asyncio.sleep(0.25)
-            self._is_playing = False
+            self._tail_clear = asyncio.create_task(self._deferred_clear())
 
     async def play_sleep_sound(self) -> None:
         """Play power-down chime."""
@@ -209,12 +233,12 @@ class AudioIO:
         sleep_snd = np.concatenate([down, hum_down])
         sleep_snd = np.clip(sleep_snd, -1, 1).astype(np.float32)
 
+        await self._cancel_pending_tail_clear()
         self._is_playing = True
         try:
             await asyncio.to_thread(self._play_array, sleep_snd, sr)
         finally:
-            await asyncio.sleep(0.25)
-            self._is_playing = False
+            self._tail_clear = asyncio.create_task(self._deferred_clear())
 
     def _play_array(self, audio_f32: np.ndarray, sample_rate: int) -> None:
         """Play audio, polling _stop_flag every 50 ms so playback can be aborted."""
@@ -250,6 +274,10 @@ class AudioIO:
         if pcm.size == 0:
             return
 
+        # Cancel any pending tail-clear from a previous play so consecutive
+        # sentences stream seamlessly (no 250 ms gap between clips).
+        await self._cancel_pending_tail_clear()
+
         async with self._playback_lock:
             self._is_playing = True
             self._stop_flag = False
@@ -262,9 +290,9 @@ class AudioIO:
                     audio_f32 = pcm.astype(np.float32) / 32768.0
                 await asyncio.to_thread(self._play_array, audio_f32, sample_rate)
             finally:
-                await asyncio.sleep(0.25)
-                self._is_playing = False
-                self._stop_flag = False
+                # Defer the clear so the mic's echo-mute only arms once the
+                # whole stream is actually done — not between every sentence.
+                self._tail_clear = asyncio.create_task(self._deferred_clear())
 
     async def play_queue(self, clips: AsyncIterator[tuple[np.ndarray, int]]) -> None:
         """Play clips serially so sentences come out in order."""

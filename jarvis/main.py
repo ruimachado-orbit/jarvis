@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import signal
 import sys
 from pathlib import Path
@@ -29,6 +30,27 @@ from rich.prompt import Prompt
 from jarvis.core.config import get_settings, reload_settings
 from jarvis.core.session import build_session, inject_google
 from jarvis.graph.agent import run_turn
+
+
+def _load_env_file_vars() -> None:
+    """Export non-JARVIS_-prefixed vars from .env into os.environ.
+
+    pydantic-settings already picks up JARVIS_* for the Settings object, but
+    libraries like huggingface_hub only see process env — not .env. Without
+    this, running ``python -m jarvis voice`` directly (bypassing ``make dev``)
+    leaves HF_TOKEN unset and gated repos fail with 401.
+
+    Precedence: existing os.environ wins over .env values.
+    """
+    import os
+    from dotenv import dotenv_values
+    for k, v in dotenv_values(".env").items():
+        if v is not None and k not in os.environ:
+            os.environ[k] = v
+
+
+_load_env_file_vars()
+
 
 app = typer.Typer(add_completion=False, help="Jarvis — proactive personal AI.")
 auth_app = typer.Typer(add_completion=False, help="Authentication commands.")
@@ -109,6 +131,39 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     SENT_RE = re.compile(r"([.!?])\s+")
     conversation_history: list[dict] = []
 
+    # Spoken-aloud acknowledgement fired as soon as Jarvis receives a request,
+    # while the LLM is still generating — keeps the user feeling heard.
+    ACKNOWLEDGEMENTS = [
+        "Right away, Sir.",
+        "Let me check that for you, Sir.",
+        "One moment, Sir.",
+        "On it, Sir.",
+        "Looking into it, Sir.",
+        "Working on it, Sir.",
+        "Certainly, Sir.",
+        "At once, Sir.",
+    ]
+    WAKE_RESPONSE = "At your service, Sir. How may I be of assistance?"
+    SLEEP_RESPONSE = "Very good, Sir. Powering down. Do call if you need me."
+
+    # Periodic filler phrases fired during long tool-calling turns so the
+    # user keeps hearing signs of life while Claude runs email/calendar ops.
+    FILLERS = [
+        "Still working on it, Sir.",
+        "One moment more, Sir.",
+        "Almost there, Sir.",
+        "Bear with me, Sir.",
+        "Just a bit longer, Sir.",
+        "Nearly done, Sir.",
+    ]
+
+    # Pre-synth fixed phrases so the first ack/wake/sleep plays instantly
+    # (no Kokoro cold-start, no per-call synth). Disk-cached across runs.
+    _prewarm_list = [*ACKNOWLEDGEMENTS, *FILLERS, WAKE_RESPONSE, SLEEP_RESPONSE]
+    log.info("pre-warming TTS cache (%d phrases)...", len(_prewarm_list))
+    _pcm_cache: dict[str, tuple[np.ndarray, int]] = await tts.prewarm(_prewarm_list)
+    log.info("TTS ready (%d phrases cached)", len(_pcm_cache))
+
     async def _ask_claude(user_text: str, sentence_cb=None) -> str:
         from jarvis.graph.agent import run_turn
         response, updated = await run_turn(
@@ -138,8 +193,13 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                 _tts_queue.task_done()
                 continue
             try:
-                log.debug("TTS synthesising: %s", sentence[:40])
-                pcm_out, sr = await tts.synthesize(sentence)
+                cached = _pcm_cache.get(sentence)
+                if cached is not None:
+                    pcm_out, sr = cached
+                    log.debug("TTS cache hit: %s", sentence[:40])
+                else:
+                    log.debug("TTS synthesising: %s", sentence[:40])
+                    pcm_out, sr = await tts.synthesize(sentence)
                 log.debug("TTS playing %d samples", len(pcm_out))
                 _speaking.set()
                 await audio.play(pcm_out, sr)
@@ -154,8 +214,13 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     async def _speak_direct(text: str) -> None:
         """Synthesise and play a fixed phrase without going through the LLM."""
         try:
-            log.debug("speak_direct: %s", text[:40])
-            pcm_out, sr = await tts.synthesize(text)
+            cached = _pcm_cache.get(text)
+            if cached is not None:
+                pcm_out, sr = cached
+                log.debug("speak_direct cache hit: %s", text[:40])
+            else:
+                log.debug("speak_direct: %s", text[:40])
+                pcm_out, sr = await tts.synthesize(text)
             _speaking.set()
             await audio.play(pcm_out, sr)
             log.debug("speak_direct done")
@@ -178,11 +243,52 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
         _drain_tts_queue()
         consumer = asyncio.create_task(_tts_consumer())
 
+        loop = asyncio.get_running_loop()
+        last_put = loop.time()
+
+        async def _put(item: str) -> None:
+            nonlocal last_put
+            last_put = loop.time()
+            await _tts_queue.put(item)
+
+        # Queue an acknowledgement first so it plays while claude is thinking —
+        # the consumer serialises playback, so the LLM's first sentence lands
+        # right after the ack finishes.
+        ack = random.choice(ACKNOWLEDGEMENTS)
+        console.print(f"[dim](ack)[/dim] {ack}")
+        await _put(ack)
+
+        # Filler ticker: drop a short "still working" phrase every ~3 s of
+        # queue silence while the LLM+tools run, so slow email/calendar turns
+        # don't leave the user hearing dead air. Stops when claude returns.
+        claude_done = asyncio.Event()
+
+        async def _filler_ticker() -> None:
+            while not claude_done.is_set():
+                try:
+                    await asyncio.wait_for(claude_done.wait(), timeout=1.0)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                if _interrupt.is_set():
+                    return
+                if loop.time() - last_put >= 3.0:
+                    filler = random.choice(FILLERS)
+                    log.debug("filler: %s", filler)
+                    await _put(filler)
+
+        ticker = asyncio.create_task(_filler_ticker())
+
         async def _on_sentence(s: str) -> None:
             if not _interrupt.is_set():
-                await _tts_queue.put(s)
+                await _put(s)
 
-        reply = await _ask_claude(text, sentence_cb=_on_sentence)
+        try:
+            reply = await _ask_claude(text, sentence_cb=_on_sentence)
+        finally:
+            claude_done.set()
+            await ticker
+
         await _tts_queue.put(None)
         await consumer
         return reply
@@ -207,10 +313,11 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
         min_frames = max(1, settings.min_utterance_ms // frame_ms)
         max_frames = max(min_frames, settings.max_utterance_ms // frame_ms)
 
-        SPEECH_RMS = 0.006    # trigger: onset threshold
-        SILENCE_RMS = 0.003   # end-of-utterance threshold
-        MIN_UTT_RMS = 0.003   # reject whole utterance below this (pure noise floor)
-        ECHO_MUTE_FRAMES = 17 # frames (~500ms) to discard after playback ends
+        # webrtcvad does the speech/silence classification; energy is just a
+        # floor to reject dead-silent frames that VAD sometimes marks as speech.
+        ENERGY_FLOOR = 0.0015  # frames below this are always non-speech
+        MIN_UTT_RMS = 0.004    # reject whole utterances too quiet for STT to parse
+        ECHO_MUTE_FRAMES = 17  # frames (~500ms) to discard after playback ends
 
         vad = webrtcvad.Vad(settings.vad_aggressiveness)
         raw_q: _queue.Queue[np.ndarray] = _queue.Queue()
@@ -268,14 +375,13 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                     echo_mute -= 1
                     continue
 
-                # ── Silent mode: normal VAD recording ───────────────────────
+                # VAD-gated recording. webrtcvad is designed for this; energy
+                # floor just suppresses VAD misfires on dead-silent buffers.
                 try:
                     vad_speech = vad.is_speech(frame.tobytes(), sr)
                 except Exception:
                     vad_speech = False
-                # Require energy above threshold to trigger (webrtcvad alone fires on noise)
-                is_speech = frame_rms > SPEECH_RMS
-                is_silence = frame_rms < SILENCE_RMS
+                is_speech = vad_speech and frame_rms > ENERGY_FLOOR
 
                 if triggered:
                     collecting.append(frame)
@@ -284,17 +390,25 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                         trailing_silence = 0
                     else:
                         trailing_silence += 1
+                    hit_max = total_frames >= max_frames
                     if (trailing_silence >= silence_frames and total_frames >= min_frames) \
-                            or total_frames >= max_frames:
+                            or hit_max:
                         pcm = np.concatenate(collecting)
                         utt_rms = float(np.sqrt(np.mean((pcm.astype(np.float32) / 32768.0) ** 2)))
+                        dur_ms = total_frames * frame_ms
+                        log.info(
+                            "mic: captured %dms rms=%.4f %s",
+                            dur_ms, utt_rms,
+                            "(hit max)" if hit_max else "(silence)",
+                        )
                         triggered = False
                         collecting = []
                         total_frames = 0
                         trailing_silence = 0
-                        # Only send to STT if loud enough to be real speech
                         if utt_rms >= MIN_UTT_RMS:
                             await _captured.put(pcm)
+                        else:
+                            log.info("mic: dropped utterance (too quiet rms=%.4f)", utt_rms)
                 else:
                     if is_speech:
                         triggered = True
@@ -350,7 +464,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                     sleeping = False
                     console.print("[bold green]Jarvis[/]: [yellow]At your service, Sir.[/]")
                     await audio.play_boot_sound()
-                    await _speak_direct("At your service, Sir. How may I be of assistance?")
+                    await _speak_direct(WAKE_RESPONSE)
                 else:
                     console.print(f"[dim](sleeping) heard: '{text}'[/dim]")
                 continue
@@ -358,7 +472,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             if _is_sleep(text):
                 sleeping = True
                 console.print("[bold green]Jarvis[/]: [dim]Powering down.[/]")
-                await _speak_direct("Very good, Sir. Powering down. Do call if you need me.")
+                await _speak_direct(SLEEP_RESPONSE)
                 await audio.play_sleep_sound()
                 continue
 

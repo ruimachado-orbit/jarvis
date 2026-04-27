@@ -258,10 +258,26 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
         console.print(f"[dim](ack)[/dim] {ack}")
         await _put(ack)
 
-        # Filler ticker: drop a short "still working" phrase every ~3 s of
+        # Filler ticker: drop a short "still working" phrase every ~5 s of
         # queue silence while the LLM+tools run, so slow email/calendar turns
         # don't leave the user hearing dead air. Stops when claude returns.
         claude_done = asyncio.Event()
+
+        # Shuffled queue so each cycle uses every phrase once before repeating,
+        # and the cycle boundary doesn't accidentally repeat the previous filler.
+        filler_queue: list[str] = []
+        last_filler: str | None = None
+
+        def _next_filler() -> str:
+            nonlocal last_filler
+            if not filler_queue:
+                candidates = random.sample(FILLERS, len(FILLERS))
+                if last_filler and candidates[0] == last_filler and len(candidates) > 1:
+                    candidates[0], candidates[1] = candidates[1], candidates[0]
+                filler_queue.extend(candidates)
+            f = filler_queue.pop(0)
+            last_filler = f
+            return f
 
         async def _filler_ticker() -> None:
             while not claude_done.is_set():
@@ -272,8 +288,8 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                     pass
                 if _interrupt.is_set():
                     return
-                if loop.time() - last_put >= 3.0:
-                    filler = random.choice(FILLERS)
+                if loop.time() - last_put >= 5.0:
+                    filler = _next_filler()
                     log.debug("filler: %s", filler)
                     await _put(filler)
 

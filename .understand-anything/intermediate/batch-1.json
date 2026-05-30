@@ -1,0 +1,585 @@
+{
+  "nodes": [
+    {
+      "id": "jarvis.core.config.Settings",
+      "type": "class",
+      "name": "Settings",
+      "description": "Central configuration class using Pydantic BaseSettings. Manages all Jarvis settings including LLM, STT/TTS, audio, wake word, workspace safety, Google, web search, memory, Telegram, and proactive monitors. Loads from .env file with JARVIS_ prefix.",
+      "file_path": "jarvis/core/config.py",
+      "start_line": 9,
+      "end_line": 97,
+      "attributes": [
+        "llm_model",
+        "llm_temperature",
+        "llm_max_tokens",
+        "stt_language",
+        "tts_engine",
+        "tts_voice",
+        "input_device",
+        "output_device",
+        "wake_word",
+        "workspace",
+        "allow_writes",
+        "allow_shell",
+        "google_credentials",
+        "brave_api_key",
+        "mem0_enabled",
+        "telegram_token"
+      ],
+      "methods": [
+        "expand_path",
+        "allowed_chat_ids",
+        "notify_chat_id",
+        "watch_path_list"
+      ],
+      "dependencies": [
+        "pydantic.BaseSettings",
+        "pathlib.Path"
+      ]
+    },
+    {
+      "id": "jarvis.core.config.get_settings",
+      "type": "function",
+      "name": "get_settings",
+      "description": "Returns singleton Settings instance. Creates new instance on first call.",
+      "file_path": "jarvis/core/config.py",
+      "start_line": 102,
+      "end_line": 106,
+      "return_type": "Settings"
+    },
+    {
+      "id": "jarvis.core.config.reload_settings",
+      "type": "function",
+      "name": "reload_settings",
+      "description": "Forces reload of Settings instance from environment. Used for testing or when env vars change.",
+      "file_path": "jarvis/core/config.py",
+      "start_line": 109,
+      "end_line": 112,
+      "return_type": "Settings"
+    },
+    {
+      "id": "jarvis.tools.coding.ToolError",
+      "type": "class",
+      "name": "ToolError",
+      "description": "Exception raised by tool implementations when operations fail (e.g., path outside workspace, file too large, disabled features).",
+      "file_path": "jarvis/tools/coding.py",
+      "start_line": 20,
+      "end_line": 21
+    },
+    {
+      "id": "jarvis.tools.coding.Toolbox",
+      "type": "class",
+      "name": "Toolbox",
+      "description": "Coding tools surface for agent. Provides safe file operations, directory listing, grep search, file writing, and shell execution. All operations are scoped to workspace with path safety validation. Write and shell tools are gated by settings flags.",
+      "file_path": "jarvis/tools/coding.py",
+      "start_line": 24,
+      "end_line": 126,
+      "methods": [
+        "_resolve",
+        "read_file",
+        "list_dir",
+        "grep",
+        "write_file",
+        "run_shell"
+      ],
+      "attributes": [
+        "settings",
+        "root"
+      ],
+      "dependencies": [
+        "jarvis.core.config.Settings",
+        "pathlib.Path"
+      ]
+    },
+    {
+      "id": "jarvis.tools.coding.Toolbox.read_file",
+      "type": "method",
+      "name": "read_file",
+      "description": "Reads a file from workspace with optional line slicing. Enforces MAX_FILE_BYTES (200KB) limit. Returns numbered lines.",
+      "file_path": "jarvis/tools/coding.py",
+      "start_line": 41,
+      "end_line": 51,
+      "parameters": [
+        "path",
+        "start_line",
+        "end_line"
+      ],
+      "return_type": "str"
+    },
+    {
+      "id": "jarvis.tools.coding.Toolbox.list_dir",
+      "type": "method",
+      "name": "list_dir",
+      "description": "Lists directory contents, sorted with directories first. Hides dotfiles.",
+      "file_path": "jarvis/tools/coding.py",
+      "start_line": 53,
+      "end_line": 64,
+      "parameters": [
+        "path"
+      ],
+      "return_type": "str"
+    },
+    {
+      "id": "jarvis.tools.coding.Toolbox.grep",
+      "type": "method",
+      "name": "grep",
+      "description": "Regex search across files with glob filtering. Returns up to MAX_GREP_MATCHES (200) results. Skips .pyc and .git files.",
+      "file_path": "jarvis/tools/coding.py",
+      "start_line": 66,
+      "end_line": 92,
+      "parameters": [
+        "pattern",
+        "path",
+        "glob"
+      ],
+      "return_type": "str"
+    },
+    {
+      "id": "jarvis.tools.coding.Toolbox.write_file",
+      "type": "method",
+      "name": "write_file",
+      "description": "Writes content to file if JARVIS_ALLOW_WRITES is enabled. Creates parent directories.",
+      "file_path": "jarvis/tools/coding.py",
+      "start_line": 94,
+      "end_line": 100,
+      "parameters": [
+        "path",
+        "content"
+      ],
+      "return_type": "str"
+    },
+    {
+      "id": "jarvis.tools.coding.Toolbox.run_shell",
+      "type": "method",
+      "name": "run_shell",
+      "description": "Executes shell command in workspace if JARVIS_ALLOW_SHELL is enabled. Blocks dangerous commands (rm -rf /, mkfs, fork bombs). Enforces timeout and output truncation.",
+      "file_path": "jarvis/tools/coding.py",
+      "start_line": 102,
+      "end_line": 125,
+      "parameters": [
+        "command",
+        "timeout"
+      ],
+      "return_type": "str",
+      "async": true
+    },
+    {
+      "id": "jarvis.tools.registry.Toolbox",
+      "type": "class",
+      "name": "Toolbox",
+      "description": "Unified tool registry and dispatcher for all Jarvis tools. Routes tool calls to coding, web, memory, calendar, email, and notification handlers. Provides async dispatch method with error handling.",
+      "file_path": "jarvis/tools/registry.py",
+      "start_line": 13,
+      "end_line": 87,
+      "methods": [
+        "inject_google",
+        "dispatch"
+      ],
+      "attributes": [
+        "_coding",
+        "_settings",
+        "_mem0",
+        "_calendar",
+        "_email"
+      ],
+      "dependencies": [
+        "jarvis.core.config.Settings",
+        "jarvis.tools.coding.Toolbox",
+        "jarvis.tools.coding.ToolError"
+      ]
+    },
+    {
+      "id": "jarvis.tools.registry.Toolbox.dispatch",
+      "type": "method",
+      "name": "dispatch",
+      "description": "Central async dispatcher for all tool calls. Routes to appropriate handler based on tool name. Returns error strings on failure.",
+      "file_path": "jarvis/tools/registry.py",
+      "start_line": 25,
+      "end_line": 87,
+      "parameters": [
+        "name",
+        "args"
+      ],
+      "return_type": "str",
+      "async": true
+    },
+    {
+      "id": "jarvis.tools.registry.TOOL_SCHEMAS",
+      "type": "constant",
+      "name": "TOOL_SCHEMAS",
+      "description": "OpenAI-style function schemas for all 21 tools: coding (read_file, list_dir, grep, write_file, run_shell), web (web_search, fetch_page), memory (remember, recall, forget), calendar (list_events, create_event, update_event, find_free_slot), email (list_emails, read_email, draft_reply, send_email), and notify.",
+      "file_path": "jarvis/tools/registry.py",
+      "start_line": 90,
+      "end_line": 234,
+      "value_type": "list[dict]"
+    },
+    {
+      "id": "jarvis.voice.stt.STT",
+      "type": "class",
+      "name": "STT",
+      "description": "Real-time speech-to-text powered by Mistral Voxtral-Mini-4B-Realtime-2602. Provides <500ms transcription latency optimized for Apple Silicon (MPS) with bf16. Includes lazy loading, resampling to 16kHz, low-energy rejection, and hallucination filtering.",
+      "file_path": "jarvis/voice/stt.py",
+      "start_line": 68,
+      "end_line": 175,
+      "methods": [
+        "_ensure_loaded",
+        "transcribe",
+        "_transcribe_sync"
+      ],
+      "attributes": [
+        "settings",
+        "_processor",
+        "_model",
+        "_device",
+        "_loaded"
+      ],
+      "dependencies": [
+        "jarvis.core.config.Settings",
+        "transformers.AutoProcessor",
+        "transformers.AutoModel",
+        "torch",
+        "numpy"
+      ]
+    },
+    {
+      "id": "jarvis.voice.stt.STT.transcribe",
+      "type": "method",
+      "name": "transcribe",
+      "description": "Async transcription of PCM audio. Converts int16 to float32, resamples to 16kHz if needed, rejects low-energy audio (RMS < 0.001), and runs synchronous transcription in thread pool.",
+      "file_path": "jarvis/voice/stt.py",
+      "start_line": 85,
+      "end_line": 115,
+      "parameters": [
+        "pcm16",
+        "sample_rate"
+      ],
+      "return_type": "str",
+      "async": true
+    },
+    {
+      "id": "jarvis.voice.stt._get_device",
+      "type": "function",
+      "name": "_get_device",
+      "description": "Detects best available device for Voxtral inference. Priority: CUDA > MPS > CPU. Cached with lru_cache.",
+      "file_path": "jarvis/voice/stt.py",
+      "start_line": 30,
+      "end_line": 37,
+      "return_type": "str"
+    },
+    {
+      "id": "jarvis.voice.stt._load_voxtral",
+      "type": "function",
+      "name": "_load_voxtral",
+      "description": "Loads Voxtral-Mini-4B model and processor once. Uses bf16 on MPS/CUDA, fp32 on CPU. Downloads ~8GB on first run. Cached globally.",
+      "file_path": "jarvis/voice/stt.py",
+      "start_line": 40,
+      "end_line": 65,
+      "return_type": "tuple[AutoProcessor, AutoModel, str]"
+    },
+    {
+      "id": "jarvis.voice.stt._is_hallucination",
+      "type": "function",
+      "name": "_is_hallucination",
+      "description": "Filters common STT hallucinations on silent/noisy input. Detects known garbage outputs (you, okay, thanks, etc.) and repeated single words.",
+      "file_path": "jarvis/voice/stt.py",
+      "start_line": 178,
+      "end_line": 203,
+      "parameters": [
+        "text"
+      ],
+      "return_type": "bool"
+    },
+    {
+      "id": "test_voxtral_e2e",
+      "type": "module",
+      "name": "test_voxtral_e2e",
+      "description": "End-to-end test suite for Voxtral TTS and STT. Tests device detection, TTS synthesis, STT transcription, phrase caching, and performance benchmarks.",
+      "file_path": "test_voxtral_e2e.py",
+      "functions": [
+        "test_1_device_detection",
+        "test_2_tts_synthesis",
+        "test_3_stt_transcription",
+        "test_4_phrase_caching",
+        "test_5_performance_benchmark",
+        "main"
+      ]
+    },
+    {
+      "id": "test_voxtral_stt_e2e",
+      "type": "module",
+      "name": "test_voxtral_stt_e2e",
+      "description": "End-to-end test suite focused on Voxtral STT. Tests device detection, transcription with synthetic audio, low-energy rejection, resampling from different sample rates, and performance benchmarks.",
+      "file_path": "test_voxtral_stt_e2e.py",
+      "functions": [
+        "test_1_device_detection",
+        "test_2_stt_transcription",
+        "test_3_resampling",
+        "test_4_performance_benchmark",
+        "main"
+      ]
+    },
+    {
+      "id": "tests.test_core_config",
+      "type": "module",
+      "name": "test_core_config",
+      "description": "Unit tests for Settings configuration class. Tests defaults, environment variable overrides, reload functionality, telegram chat IDs parsing, and path expansion.",
+      "file_path": "tests/test_core_config.py",
+      "test_functions": [
+        "test_defaults",
+        "test_env_override",
+        "test_reload_settings",
+        "test_allowed_chat_ids",
+        "test_google_paths_expand"
+      ]
+    },
+    {
+      "id": "tests.test_tools_registry",
+      "type": "module",
+      "name": "test_tools_registry",
+      "description": "Unit tests for unified tool registry. Tests TOOL_SCHEMAS presence, unknown tool dispatch, and web search without API key.",
+      "file_path": "tests/test_tools_registry.py",
+      "test_functions": [
+        "test_tool_schemas_present",
+        "test_dispatch_unknown_tool",
+        "test_web_search_disabled_without_key"
+      ]
+    },
+    {
+      "id": "tests.test_tools_safety",
+      "type": "module",
+      "name": "test_tools_safety",
+      "description": "Safety tests for coding toolbox. Tests workspace path escaping prevention, write permissions disabled by default, and writes enabled with flag.",
+      "file_path": "tests/test_tools_safety.py",
+      "test_functions": [
+        "test_read_file_inside_workspace",
+        "test_read_file_rejects_escape",
+        "test_writes_disabled_by_default",
+        "test_writes_enabled_when_flag_set"
+      ]
+    },
+    {
+      "id": "tests.test_voice_stt_voxtral",
+      "type": "module",
+      "name": "test_voice_stt_voxtral",
+      "description": "Unit tests for Voxtral STT with mocked model. Tests transcription, low-energy rejection, and resampling.",
+      "file_path": "tests/test_voice_stt_voxtral.py",
+      "test_functions": [
+        "test_stt_transcribe",
+        "test_stt_low_energy_rejection",
+        "test_stt_resampling"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "source": "jarvis.tools.coding.Toolbox",
+      "target": "jarvis.core.config.Settings",
+      "type": "depends_on",
+      "description": "Toolbox requires Settings to initialize and check permission flags"
+    },
+    {
+      "source": "jarvis.tools.coding.Toolbox",
+      "target": "jarvis.tools.coding.ToolError",
+      "type": "raises",
+      "description": "Toolbox methods raise ToolError for invalid operations"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox",
+      "target": "jarvis.core.config.Settings",
+      "type": "depends_on",
+      "description": "Registry Toolbox stores settings for configuration access"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox",
+      "target": "jarvis.tools.coding.Toolbox",
+      "type": "uses",
+      "description": "Registry delegates coding tool calls to coding.Toolbox"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox",
+      "target": "jarvis.tools.coding.ToolError",
+      "type": "catches",
+      "description": "Registry catches ToolError and converts to error string"
+    },
+    {
+      "source": "jarvis.voice.stt.STT",
+      "target": "jarvis.core.config.Settings",
+      "type": "depends_on",
+      "description": "STT requires Settings for language and configuration"
+    },
+    {
+      "source": "jarvis.voice.stt.STT",
+      "target": "jarvis.voice.stt._load_voxtral",
+      "type": "calls",
+      "description": "STT lazy-loads Voxtral model via _load_voxtral on first use"
+    },
+    {
+      "source": "jarvis.voice.stt.STT",
+      "target": "jarvis.voice.stt._is_hallucination",
+      "type": "calls",
+      "description": "STT filters transcription output using _is_hallucination"
+    },
+    {
+      "source": "jarvis.voice.stt._load_voxtral",
+      "target": "jarvis.voice.stt._get_device",
+      "type": "calls",
+      "description": "_load_voxtral detects device before loading model"
+    },
+    {
+      "source": "test_voxtral_e2e",
+      "target": "jarvis.core.config.Settings",
+      "type": "imports",
+      "description": "E2E test loads Settings for configuration"
+    },
+    {
+      "source": "test_voxtral_stt_e2e",
+      "target": "jarvis.core.config.Settings",
+      "type": "imports",
+      "description": "STT E2E test loads Settings for configuration"
+    },
+    {
+      "source": "test_voxtral_stt_e2e",
+      "target": "jarvis.voice.stt.STT",
+      "type": "tests",
+      "description": "E2E test exercises STT class"
+    },
+    {
+      "source": "tests.test_core_config",
+      "target": "jarvis.core.config.Settings",
+      "type": "tests",
+      "description": "Unit tests verify Settings behavior"
+    },
+    {
+      "source": "tests.test_core_config",
+      "target": "jarvis.core.config.get_settings",
+      "type": "tests",
+      "description": "Unit tests verify singleton pattern"
+    },
+    {
+      "source": "tests.test_core_config",
+      "target": "jarvis.core.config.reload_settings",
+      "type": "tests",
+      "description": "Unit tests verify settings reload"
+    },
+    {
+      "source": "tests.test_tools_registry",
+      "target": "jarvis.tools.registry.Toolbox",
+      "type": "tests",
+      "description": "Unit tests verify tool dispatch"
+    },
+    {
+      "source": "tests.test_tools_registry",
+      "target": "jarvis.tools.registry.TOOL_SCHEMAS",
+      "type": "tests",
+      "description": "Unit tests verify tool schemas are present"
+    },
+    {
+      "source": "tests.test_tools_registry",
+      "target": "jarvis.core.config.Settings",
+      "type": "imports",
+      "description": "Registry tests use Settings for initialization"
+    },
+    {
+      "source": "tests.test_tools_safety",
+      "target": "jarvis.tools.coding.Toolbox",
+      "type": "tests",
+      "description": "Safety tests verify workspace isolation and permissions"
+    },
+    {
+      "source": "tests.test_tools_safety",
+      "target": "jarvis.tools.coding.ToolError",
+      "type": "expects",
+      "description": "Safety tests expect ToolError on invalid operations"
+    },
+    {
+      "source": "tests.test_voice_stt_voxtral",
+      "target": "jarvis.voice.stt.STT",
+      "type": "tests",
+      "description": "Unit tests verify STT with mocked Voxtral model"
+    },
+    {
+      "source": "tests.test_voice_stt_voxtral",
+      "target": "jarvis.core.config.Settings",
+      "type": "imports",
+      "description": "STT tests use Settings for initialization"
+    },
+    {
+      "source": "jarvis.core.config.Settings",
+      "target": "pydantic_settings.BaseSettings",
+      "type": "extends",
+      "description": "Settings extends Pydantic BaseSettings for validation and env loading"
+    },
+    {
+      "source": "jarvis.tools.coding.Toolbox._resolve",
+      "target": "jarvis.tools.coding.ToolError",
+      "type": "raises",
+      "description": "Path resolution raises ToolError for paths outside workspace"
+    },
+    {
+      "source": "jarvis.tools.coding.Toolbox.read_file",
+      "target": "jarvis.tools.coding.Toolbox._resolve",
+      "type": "calls",
+      "description": "read_file validates path safety before reading"
+    },
+    {
+      "source": "jarvis.tools.coding.Toolbox.list_dir",
+      "target": "jarvis.tools.coding.Toolbox._resolve",
+      "type": "calls",
+      "description": "list_dir validates path safety before listing"
+    },
+    {
+      "source": "jarvis.tools.coding.Toolbox.grep",
+      "target": "jarvis.tools.coding.Toolbox._resolve",
+      "type": "calls",
+      "description": "grep validates path safety before searching"
+    },
+    {
+      "source": "jarvis.tools.coding.Toolbox.write_file",
+      "target": "jarvis.tools.coding.Toolbox._resolve",
+      "type": "calls",
+      "description": "write_file validates path safety before writing"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox.dispatch",
+      "target": "jarvis.tools.coding.Toolbox.read_file",
+      "type": "routes_to",
+      "description": "dispatch routes read_file calls to coding toolbox"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox.dispatch",
+      "target": "jarvis.tools.coding.Toolbox.list_dir",
+      "type": "routes_to",
+      "description": "dispatch routes list_dir calls to coding toolbox"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox.dispatch",
+      "target": "jarvis.tools.coding.Toolbox.grep",
+      "type": "routes_to",
+      "description": "dispatch routes grep calls to coding toolbox"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox.dispatch",
+      "target": "jarvis.tools.coding.Toolbox.write_file",
+      "type": "routes_to",
+      "description": "dispatch routes write_file calls to coding toolbox"
+    },
+    {
+      "source": "jarvis.tools.registry.Toolbox.dispatch",
+      "target": "jarvis.tools.coding.Toolbox.run_shell",
+      "type": "routes_to",
+      "description": "dispatch routes run_shell calls to coding toolbox"
+    },
+    {
+      "source": "jarvis.voice.stt.STT.transcribe",
+      "target": "jarvis.voice.stt.STT._transcribe_sync",
+      "type": "delegates_to",
+      "description": "async transcribe runs synchronous transcription in thread pool"
+    },
+    {
+      "source": "jarvis.voice.stt.STT._transcribe_sync",
+      "target": "jarvis.voice.stt.STT._ensure_loaded",
+      "type": "calls",
+      "description": "_transcribe_sync ensures model is loaded before transcription"
+    }
+  ]
+}

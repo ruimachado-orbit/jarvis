@@ -1,0 +1,881 @@
+{
+  "nodes": [
+    {
+      "id": ".env",
+      "label": "Environment Configuration",
+      "type": "config",
+      "file_path": ".env",
+      "language": "env",
+      "description": "Production environment configuration with API keys, voice settings, audio device configuration, wake word settings, workspace safety controls, and external service integrations (Google, Brave, Telegram, HuggingFace).",
+      "metadata": {
+        "config_categories": [
+          "LLM Configuration (Claude via claude CLI with OAuth)",
+          "STT Configuration (Voxtral)",
+          "TTS Configuration (CSM/Kokoro)",
+          "Audio Settings (devices, VAD, sample rate)",
+          "Wake Word Configuration (openWakeWord)",
+          "Workspace Safety (writes, shell, email)",
+          "Google Credentials",
+          "Web Search (Brave API)",
+          "Memory (mem0)",
+          "Telegram Bot",
+          "Proactive Monitors (calendar, email, watch)",
+          "HuggingFace Token"
+        ],
+        "api_keys": [
+          "HF_TOKEN",
+          "JARVIS_BRAVE_API_KEY",
+          "JARVIS_TELEGRAM_TOKEN"
+        ],
+        "security_flags": [
+          "JARVIS_ALLOW_WRITES=false",
+          "JARVIS_ALLOW_SHELL=false",
+          "JARVIS_ALLOW_SEND_EMAIL=false"
+        ],
+        "voice_engines": {
+          "stt": "base.en (Whisper)",
+          "tts": "kokoro (bm_george voice)",
+          "alternative_tts": "csm (Sesame CSM 1B)"
+        },
+        "audio_device": "Anker PowerConf C200",
+        "wake_word": "hey jarvis"
+      }
+    },
+    {
+      "id": ".env.example",
+      "label": "Environment Template",
+      "type": "config",
+      "file_path": ".env.example",
+      "language": "env",
+      "description": "Example environment configuration template for new installations. Uses Voxtral-Mini-4B-Realtime for unified STT+TTS (gated model requiring HuggingFace approval). Provides safe defaults with security features disabled.",
+      "metadata": {
+        "differences_from_production": [
+          "Uses Voxtral for both STT and TTS (unified)",
+          "Requires ANTHROPIC_API_KEY (production uses claude CLI OAuth)",
+          "Empty API keys (HF_TOKEN, JARVIS_TELEGRAM_TOKEN)",
+          "No sensitive tokens included",
+          "Documents Voxtral-Mini-4B-Realtime-2602 gated access"
+        ],
+        "voice_model": "mistralai/Voxtral-Mini-4B-Realtime-2602",
+        "required_access": "HuggingFace model approval required"
+      }
+    },
+    {
+      "id": "INSTALL_VOXTRAL.md",
+      "label": "Voxtral Installation Guide",
+      "type": "documentation",
+      "file_path": "INSTALL_VOXTRAL.md",
+      "language": "markdown",
+      "description": "Comprehensive quick start guide for installing and configuring Voxtral-Mini-4B-Realtime unified speech model. Covers dependency installation, HuggingFace access, environment configuration, testing, troubleshooting, and performance expectations.",
+      "metadata": {
+        "installation_steps": [
+          "Install dependencies (transformers, torch, torchaudio, accelerate)",
+          "Create HuggingFace token with Read access",
+          "Request model access (mistralai/Voxtral-Mini-4B-Realtime-2602)",
+          "Configure .env with HF_TOKEN",
+          "Test with make voice"
+        ],
+        "model_details": {
+          "name": "Voxtral-Mini-4B-Realtime-2602",
+          "size": "~8GB",
+          "cache_location": "~/.cache/huggingface/hub/",
+          "memory_requirement": "~6GB unified memory"
+        },
+        "hardware_support": [
+          "Apple Silicon (MPS) - recommended",
+          "CUDA (RTX 3060 12GB+)",
+          "CPU (slow, 5-10s per synthesis)"
+        ],
+        "performance_expectations": {
+          "first_synthesis": "2-3s (model loading)",
+          "warm_synthesis": "500ms-1s",
+          "cached_phrases": "<10ms",
+          "transcription": "200-400ms",
+          "total_latency": "2-5s from speech to response"
+        },
+        "troubleshooting_topics": [
+          "HF_TOKEN not set",
+          "Cannot access repository",
+          "MPS not available",
+          "Out of memory",
+          "Slow downloads"
+        ]
+      }
+    },
+    {
+      "id": "Makefile",
+      "label": "Build & Dev Commands",
+      "type": "config",
+      "file_path": "Makefile",
+      "language": "makefile",
+      "description": "Development workflow automation with targets for initialization, voice/chat/telegram modes, testing, authentication, and memory management. Includes zombie process cleanup and HF_TOKEN loading from .env.",
+      "metadata": {
+        "targets": [
+          "init - setup venv and dependencies",
+          "ensure-venv - create venv if missing",
+          "kill-zombies - cleanup stopped jarvis voice processes",
+          "voice - run voice loop with HF_TOKEN validation",
+          "chat - text REPL mode",
+          "ask - one-shot query",
+          "telegram - Telegram bridge only",
+          "watch - file watching with notifications",
+          "notify - send Telegram notification",
+          "auth-google - Google OAuth setup",
+          "test - run pytest suite",
+          "memory-show - display mem0 status",
+          "memory-reset - clear mem0 store"
+        ],
+        "critical_features": [
+          "kill-zombies: Prevents macOS mic device lock from stopped processes",
+          "load_hf_token: Extracts HF_TOKEN from .env without sourcing (handles spaces)",
+          "ensure-venv: Safe dependency check without clobbering .env"
+        ],
+        "dependencies_installed": "pip install -e '.[dev,wake]'",
+        "test_exclusions": [
+          "test_memory.py",
+          "test_tools_safety.py",
+          "test_streaming_pipeline.py",
+          "test_agent_streaming.py"
+        ]
+      }
+    },
+    {
+      "id": "README.md",
+      "label": "Project Documentation",
+      "type": "documentation",
+      "file_path": "README.md",
+      "language": "markdown",
+      "description": "Main project documentation covering architecture, installation, usage, voice setup, Telegram integration, wake word configuration, streaming, memory management, and safety defaults. Describes Jarvis as a voice-first local coding assistant inspired by Hermes agent gateway pattern.",
+      "metadata": {
+        "architecture_components": [
+          "LLM: Claude API via claude CLI (OAuth, no API key)",
+          "Wake word: openWakeWord (hey_jarvis model)",
+          "STT: Mistral Voxtral-Mini-4B-Realtime (<500ms latency)",
+          "TTS: Sesame CSM 1B (preferred) or Kokoro ONNX (fallback)",
+          "Messaging: python-telegram-bot",
+          "Watch: watchfiles for Telegram notifications"
+        ],
+        "commands": [
+          "make voice - hands-free voice loop",
+          "make chat - streaming text REPL",
+          "make ask - one-shot query",
+          "make telegram - Telegram bridge only",
+          "make watch - watch paths and notify",
+          "make notify - send push notification",
+          "make test - run test suite"
+        ],
+        "voice_setup_requirements": {
+          "stt": "HuggingFace token with Voxtral access, ~8GB download",
+          "tts": "Same HF_TOKEN for CSM, or kokoro fallback",
+          "hardware": "M1/M2/M3 16GB+ (recommended), RTX 3060 12GB+ (CUDA), or CPU (slow)"
+        },
+        "telegram_setup": [
+          "Create bot with @BotFather",
+          "Get chat ID with /whoami",
+          "Set JARVIS_TELEGRAM_TOKEN, JARVIS_TELEGRAM_ALLOWED_CHATS, JARVIS_TELEGRAM_NOTIFY_CHAT"
+        ],
+        "memory_system": {
+          "storage": "SQLite (./.jarvis/memory.db)",
+          "tiers": [
+            "Episodic log (raw records)",
+            "Distilled profile (LLM-generated bullet list, ≤1KB)"
+          ],
+          "commands": [
+            "make memory-show",
+            "make memory-refresh",
+            "make memory-reset",
+            "jarvis memory export"
+          ]
+        },
+        "safety_defaults": {
+          "always_on": ["read_file", "list_dir", "grep"],
+          "gated": ["write_file (JARVIS_ALLOW_WRITES)", "run_shell (JARVIS_ALLOW_SHELL)"]
+        },
+        "project_layout": {
+          "core_files": [
+            "agent.py - multi-turn tool loop",
+            "audio.py - VAD recording and playback",
+            "config.py - pydantic settings",
+            "llm.py - vLLM client",
+            "main.py - typer CLI",
+            "memory.py - SQLite + distillation",
+            "personality.py - system prompt",
+            "streaming.py - sentence streaming",
+            "stt.py - Whisper transcriber",
+            "telegram_bot.py - bot bridge",
+            "tools.py - sandboxed tools",
+            "tts.py - Piper synthesis",
+            "wake.py - openWakeWord detector",
+            "watch.py - file watcher"
+          ]
+        }
+      }
+    },
+    {
+      "id": "VOXTRAL_COMPLETE.md",
+      "label": "Voxtral Completion Report",
+      "type": "documentation",
+      "file_path": "VOXTRAL_COMPLETE.md",
+      "language": "markdown",
+      "description": "Final implementation report documenting the hybrid voice architecture decision: Voxtral for STT + CSM/Kokoro for TTS. Explains why unified approach was not used (Voxtral is STT-only), test results, performance gains, and complete installation guide.",
+      "metadata": {
+        "key_decision": "Voxtral is STT-only, not unified S2S model - hybrid approach is optimal",
+        "architecture": {
+          "stt": "Voxtral-Mini-4B-Realtime (<500ms latency)",
+          "tts": "CSM 1B / Kokoro ONNX (retained from previous implementation)"
+        },
+        "performance_improvement": "1-2s faster vs faster-whisper",
+        "latency_breakdown": {
+          "before": "User speaks → VAD (700ms) → Whisper (1-3s) → LLM (2s) → TTS (1s) → Play = 4-7s",
+          "after": "User speaks → VAD (700ms) → Voxtral (<500ms) → LLM (2s) → TTS (1s) → Play = 4-5s"
+        },
+        "test_results": [
+          "Device detection (MPS on Apple Silicon)",
+          "STT transcription (~1s synthetic audio)",
+          "Audio resampling (8kHz to 48kHz)",
+          "Performance benchmarks (0.84-1.13s per second)"
+        ],
+        "files_changed": {
+          "created": [
+            "jarvis/voice/stt.py (219 lines)",
+            "tests/test_voice_stt_voxtral.py",
+            "test_voxtral_stt_e2e.py",
+            "docs/VOXTRAL_IMPLEMENTATION.md",
+            "VOXTRAL_COMPLETE.md"
+          ],
+          "restored": ["jarvis/voice/tts.py (CSM/Kokoro)"],
+          "modified": [
+            "jarvis/main.py",
+            "jarvis/core/config.py",
+            "jarvis/voice/streaming.py",
+            "pyproject.toml",
+            "README.md"
+          ],
+          "removed": ["Old unified voxtral.py attempts"]
+        },
+        "configuration": {
+          "stt": "HF_TOKEN, JARVIS_STT_LANGUAGE",
+          "tts": "JARVIS_TTS_ENGINE (csm/kokoro), JARVIS_TTS_VOICE, JARVIS_TTS_SPEED"
+        },
+        "benchmarks_mps": {
+          "model_loading": "3-5s (first run, then cached)",
+          "transcription": "0.8-1.1s per second of audio",
+          "expected_real_speech": "<500ms"
+        }
+      }
+    },
+    {
+      "id": "VOXTRAL_IMPLEMENTATION.md",
+      "label": "Voxtral Implementation Details",
+      "type": "documentation",
+      "file_path": "VOXTRAL_IMPLEMENTATION.md",
+      "language": "markdown",
+      "description": "Technical implementation summary of the Voxtral migration attempt. Documents the original plan for unified STT+TTS, VoxtralEngine class design, optimizations, testing strategy, and migration impact. Note: This documents the unified approach that was later changed to hybrid STT-only.",
+      "metadata": {
+        "original_plan": "Complete replacement with unified Voxtral-Mini-4B-Realtime for both STT and TTS",
+        "architecture_comparison": {
+          "before": "Audio → faster-whisper (STT) → Text; Text → CSM/Kokoro (TTS) → Audio",
+          "planned_after": "Audio → Voxtral (STT) → Text; Text → Voxtral (TTS) → Audio",
+          "future_vision": "Audio → Voxtral (Speech-to-Speech) → Audio (<200ms latency)"
+        },
+        "key_features": [
+          "Unified 4B parameter model",
+          "Apple Silicon MPS optimization with bf16 precision",
+          "Phrase caching (~/.cache/jarvis/voxtral/*.npz)",
+          "Streaming support via asyncio",
+          "Hallucination filtering (low-energy rejection, repeated words)"
+        ],
+        "voxtral_engine_class": {
+          "methods": [
+            "transcribe(pcm16, sample_rate) - STT",
+            "synthesize(text) - TTS",
+            "prewarm(phrases) - cache common phrases"
+          ],
+          "optimizations": [
+            "Lazy model loading",
+            "Global model caching via @lru_cache",
+            "Automatic resampling (16kHz → 24kHz native)",
+            "Speed adjustment via torchaudio"
+          ]
+        },
+        "simplified_config": {
+          "kept": ["stt_language", "tts_speed", "tts_max_audio_ms"],
+          "removed": [
+            "stt_model",
+            "stt_device",
+            "stt_compute_type",
+            "tts_engine",
+            "tts_voice"
+          ]
+        },
+        "performance_expectations": {
+          "mps": {
+            "model_loading": "3-5s (first run)",
+            "stt_latency": "200-400ms",
+            "tts_latency": "500ms-1s (warm)",
+            "cached_phrases": "<10ms"
+          },
+          "cuda": {
+            "model_loading": "2-4s",
+            "stt_latency": "150-300ms",
+            "tts_latency": "400-800ms"
+          },
+          "cpu": {
+            "stt_latency": "2-5s",
+            "tts_latency": "5-10s",
+            "note": "Not recommended for real-time"
+          }
+        },
+        "dependencies_changed": {
+          "added": [
+            "transformers>=4.48.0",
+            "torch>=2.5.0",
+            "torchaudio>=2.5.0",
+            "accelerate>=0.34.0"
+          ],
+          "removed": [
+            "faster-whisper>=1.0.3",
+            "kokoro-onnx>=0.4.0"
+          ]
+        },
+        "migration_impact": {
+          "breaking": [
+            "Old .env settings no longer used",
+            "Kokoro model files obsolete",
+            "Custom TTS/STT imports need updating"
+          ],
+          "non_breaking": [
+            "Voice loop UX unchanged",
+            "Phrase caching still works",
+            "Streaming pipeline unchanged",
+            "Audio I/O unchanged"
+          ]
+        },
+        "rollback_plan": "git revert HEAD; pip install faster-whisper kokoro-onnx",
+        "model_size": "~8GB (4B parameters in bf16)",
+        "cache_locations": [
+          "Model: ~/.cache/huggingface/hub/models--mistralai--Voxtral-Mini-4B-Realtime-2602/",
+          "Phrases: ~/.cache/jarvis/voxtral/*.npz"
+        ]
+      }
+    },
+    {
+      "id": "pyproject.toml",
+      "label": "Python Project Configuration",
+      "type": "config",
+      "file_path": "pyproject.toml",
+      "language": "toml",
+      "description": "Python project metadata and dependency specification. Defines Jarvis as a proactive personal AI with LangGraph + mem0 + Claude API. Includes voice dependencies (Voxtral STT + CSM/Kokoro TTS), LLM orchestration, Google integrations, Telegram bot, and development tools.",
+      "metadata": {
+        "project_info": {
+          "name": "jarvis",
+          "version": "0.2.0",
+          "description": "Proactive personal AI. LangGraph + mem0 + Claude API. Voice-first, Iron Man style.",
+          "requires_python": ">=3.11",
+          "license": "MIT"
+        },
+        "dependency_categories": {
+          "llm_orchestration": ["langgraph>=0.2.0", "langchain-core>=0.3.0"],
+          "memory": ["mem0ai>=0.1.0", "chromadb>=0.5.0"],
+          "google_integrations": [
+            "google-auth>=2.30.0",
+            "google-auth-oauthlib>=1.2.0",
+            "google-api-python-client>=2.130.0"
+          ],
+          "web_tools": ["trafilatura>=1.12.0", "duckduckgo-search>=6.0.0"],
+          "voice": [
+            "transformers>=4.48.0 (Voxtral STT)",
+            "torch>=2.5.0 (with MPS support)",
+            "torchaudio>=2.5.0",
+            "mistral-common>=1.5.0",
+            "kokoro-onnx>=0.4.0 (TTS fallback)",
+            "sounddevice>=0.4.7",
+            "soundfile>=0.12.0",
+            "numpy>=1.26.0",
+            "webrtcvad>=2.0.10",
+            "accelerate>=0.34.0",
+            "pynput>=1.7.6"
+          ],
+          "telegram_cli": [
+            "python-telegram-bot>=21.4",
+            "typer>=0.12.3",
+            "rich>=13.7.1"
+          ],
+          "config": [
+            "pydantic>=2.7.0",
+            "pydantic-settings>=2.3.0",
+            "python-dotenv>=1.0.1"
+          ],
+          "async_utils": [
+            "anyio>=4.4.0",
+            "watchfiles>=0.22.0",
+            "httpx>=0.27.0"
+          ]
+        },
+        "optional_dependencies": {
+          "wake": ["openwakeword>=0.6.0"],
+          "dev": ["pytest>=8.2.0", "pytest-asyncio>=0.23.7", "ruff>=0.5.0"]
+        },
+        "scripts": {
+          "jarvis": "jarvis.main:app"
+        },
+        "build_system": {
+          "requires": ["hatchling"],
+          "build_backend": "hatchling.build"
+        },
+        "tooling": {
+          "ruff": {
+            "line_length": 100,
+            "target_version": "py311",
+            "select": ["E", "F", "I", "UP", "B", "SIM"],
+            "ignore": ["E501"]
+          },
+          "pytest": {
+            "asyncio_mode": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": "config_llm",
+      "label": "LLM Configuration",
+      "type": "component",
+      "description": "Claude LLM configuration using claude CLI with OAuth (no API key). Model: claude-sonnet-4-6, Temperature: 0.2, Max tokens: 1024, Timeout: 120s.",
+      "metadata": {
+        "model": "claude-sonnet-4-6",
+        "auth_method": "OAuth via claude CLI",
+        "no_api_key_needed": true,
+        "parameters": {
+          "temperature": 0.2,
+          "max_tokens": 1024,
+          "timeout": 120.0
+        }
+      }
+    },
+    {
+      "id": "config_voice_stt",
+      "label": "Speech-to-Text Configuration",
+      "type": "component",
+      "description": "STT configuration with two approaches: production uses faster-whisper (base.en model), while example/docs promote Voxtral-Mini-4B-Realtime for <500ms latency.",
+      "metadata": {
+        "production": {
+          "model": "base.en",
+          "device": "auto",
+          "compute_type": "int8",
+          "language": "en"
+        },
+        "recommended": {
+          "model": "mistralai/Voxtral-Mini-4B-Realtime-2602",
+          "latency": "<500ms",
+          "languages": 13,
+          "parameters": "4B"
+        }
+      }
+    },
+    {
+      "id": "config_voice_tts",
+      "label": "Text-to-Speech Configuration",
+      "type": "component",
+      "description": "TTS configuration supporting two engines: CSM (Sesame CSM 1B, SOTA conversational speech) and Kokoro (legacy fallback). Production uses Kokoro with bm_george voice.",
+      "metadata": {
+        "engines": {
+          "csm": "Sesame CSM 1B (preferred, natural conversational speech)",
+          "kokoro": "Kokoro ONNX (fallback, faster)"
+        },
+        "production": {
+          "engine": "kokoro",
+          "voice": "bm_george (British male, JARVIS-ish)"
+        },
+        "common_settings": {
+          "speed": 1.0,
+          "max_audio_ms": 15000
+        }
+      }
+    },
+    {
+      "id": "config_audio",
+      "label": "Audio I/O Configuration",
+      "type": "component",
+      "description": "Audio input/output device configuration with VAD (Voice Activity Detection) settings, sample rate, and utterance length constraints.",
+      "metadata": {
+        "input_device": "Anker PowerConf C200",
+        "output_device": "default",
+        "sample_rate": 16000,
+        "vad_aggressiveness": 3,
+        "silence_ms": 700,
+        "min_utterance_ms": 300,
+        "max_utterance_ms": 30000
+      }
+    },
+    {
+      "id": "config_wake_word",
+      "label": "Wake Word Configuration",
+      "type": "component",
+      "description": "Wake word detection using openWakeWord with hey_jarvis model. Can be disabled for always-on mode or fallback to STT keyword matching.",
+      "metadata": {
+        "wake_word": "hey jarvis",
+        "enabled": true,
+        "model": "hey_jarvis_v0.1",
+        "threshold": 0.5,
+        "require_wake_word": false,
+        "fallback": "STT keyword match if openWakeWord not installed"
+      }
+    },
+    {
+      "id": "config_safety",
+      "label": "Workspace Safety Configuration",
+      "type": "component",
+      "description": "Security controls for file operations, shell execution, and email sending. All disabled by default for safe operation.",
+      "metadata": {
+        "workspace": ".",
+        "allow_writes": false,
+        "allow_shell": false,
+        "allow_send_email": false,
+        "stream_voice": true,
+        "always_allowed": ["read_file", "list_dir", "grep"],
+        "gated": ["write_file", "run_shell", "send_email"]
+      }
+    },
+    {
+      "id": "config_google",
+      "label": "Google Integration Configuration",
+      "type": "component",
+      "description": "Google API credentials and OAuth token paths for Calendar and Gmail integrations.",
+      "metadata": {
+        "credentials_path": "~/.jarvis/credentials.json",
+        "token_path": "~/.jarvis/google_token.json",
+        "auth_command": "make auth-google / jarvis auth google"
+      }
+    },
+    {
+      "id": "config_telegram",
+      "label": "Telegram Bot Configuration",
+      "type": "component",
+      "description": "Telegram bot integration for remote chat and push notifications. Includes access control via allowed chats list.",
+      "metadata": {
+        "token": "JARVIS_TELEGRAM_TOKEN",
+        "allowed_chats": "JARVIS_TELEGRAM_ALLOWED_CHATS (comma-separated)",
+        "notify_chat": "JARVIS_TELEGRAM_NOTIFY_CHAT (single chat ID)",
+        "setup": [
+          "Create bot with @BotFather",
+          "Message bot and send /whoami",
+          "Add chat ID to allowed list and notify target"
+        ]
+      }
+    },
+    {
+      "id": "config_memory",
+      "label": "Memory Configuration",
+      "type": "component",
+      "description": "mem0 long-term memory system configuration with SQLite storage. Supports episodic logs and LLM-distilled user profiles.",
+      "metadata": {
+        "path": "~/.jarvis/mem0",
+        "enabled": true,
+        "storage_tiers": [
+          "Episodic log (raw records)",
+          "Distilled profile (LLM-generated, ≤1KB)"
+        ],
+        "commands": [
+          "memory-show",
+          "memory-refresh",
+          "memory-reset",
+          "memory export"
+        ]
+      }
+    },
+    {
+      "id": "config_monitors",
+      "label": "Proactive Monitors Configuration",
+      "type": "component",
+      "description": "Background monitoring for calendar events, emails, and file system changes with configurable polling intervals and debouncing.",
+      "metadata": {
+        "calendar_poll_seconds": 300,
+        "email_poll_seconds": 600,
+        "watch_paths": ".",
+        "watch_command": "",
+        "watch_debounce_ms": 400
+      }
+    },
+    {
+      "id": "voxtral_model",
+      "label": "Voxtral-Mini-4B Model",
+      "type": "external",
+      "description": "Mistral's Voxtral-Mini-4B-Realtime-2602 speech transcription model. 4B parameters, 13 languages, <500ms latency, gated HuggingFace model requiring approval.",
+      "metadata": {
+        "provider": "Mistral AI",
+        "hf_repo": "mistralai/Voxtral-Mini-4B-Realtime-2602",
+        "size": "~8GB",
+        "parameters": "4B",
+        "languages": 13,
+        "latency": "<500ms",
+        "hardware": ["Apple Silicon MPS", "CUDA", "CPU (slow)"],
+        "access": "Gated - requires HuggingFace approval",
+        "cache_location": "~/.cache/huggingface/hub/",
+        "use_case": "Real-time speech transcription (STT only)"
+      }
+    },
+    {
+      "id": "csm_model",
+      "label": "Sesame CSM 1B Model",
+      "type": "external",
+      "description": "Sesame's CSM (Conversational Speech Model) 1B parameter text-to-speech model. SOTA quality for natural conversational speech synthesis.",
+      "metadata": {
+        "provider": "Sesame",
+        "hf_repo": "sesame/csm-1b",
+        "parameters": "1B",
+        "quality": "SOTA conversational speech",
+        "use_case": "Primary TTS engine",
+        "status": "Preferred engine in production"
+      }
+    },
+    {
+      "id": "kokoro_model",
+      "label": "Kokoro ONNX Model",
+      "type": "external",
+      "description": "Kokoro ONNX text-to-speech model with multiple voice options. Used as fallback TTS engine, currently active in production with bm_george voice.",
+      "metadata": {
+        "repository": "github.com/thewh1teagle/kokoro-onnx",
+        "format": "ONNX",
+        "voices": ["bm_george (British male)", "bm_lewis", "af_heart"],
+        "use_case": "TTS fallback / current production",
+        "production_voice": "bm_george (JARVIS-ish)"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": ".env",
+      "target": "config_llm",
+      "relationship": "configures",
+      "description": "Defines LLM model (claude-sonnet-4-6), temperature, max tokens, and timeout"
+    },
+    {
+      "source": ".env",
+      "target": "config_voice_stt",
+      "relationship": "configures",
+      "description": "Defines STT model (base.en), device (auto), compute type (int8), and language (en)"
+    },
+    {
+      "source": ".env",
+      "target": "config_voice_tts",
+      "relationship": "configures",
+      "description": "Defines TTS engine (kokoro), voice (bm_george), speed, and max audio length"
+    },
+    {
+      "source": ".env",
+      "target": "config_audio",
+      "relationship": "configures",
+      "description": "Defines audio devices, sample rate, VAD aggressiveness, and utterance constraints"
+    },
+    {
+      "source": ".env",
+      "target": "config_wake_word",
+      "relationship": "configures",
+      "description": "Defines wake word phrase, model, threshold, and enable/require flags"
+    },
+    {
+      "source": ".env",
+      "target": "config_safety",
+      "relationship": "configures",
+      "description": "Defines workspace path and safety flags for writes, shell, and email"
+    },
+    {
+      "source": ".env",
+      "target": "config_google",
+      "relationship": "configures",
+      "description": "Defines Google credentials and token paths for Calendar/Gmail integration"
+    },
+    {
+      "source": ".env",
+      "target": "config_telegram",
+      "relationship": "configures",
+      "description": "Defines Telegram bot token, allowed chats, and notification target chat"
+    },
+    {
+      "source": ".env",
+      "target": "config_memory",
+      "relationship": "configures",
+      "description": "Defines mem0 storage path and enable flag"
+    },
+    {
+      "source": ".env",
+      "target": "config_monitors",
+      "relationship": "configures",
+      "description": "Defines polling intervals for calendar/email and file watching settings"
+    },
+    {
+      "source": ".env",
+      "target": "voxtral_model",
+      "relationship": "references",
+      "description": "Production .env still uses faster-whisper, but docs promote Voxtral migration"
+    },
+    {
+      "source": ".env",
+      "target": "kokoro_model",
+      "relationship": "references",
+      "description": "Production TTS uses kokoro engine with bm_george voice"
+    },
+    {
+      "source": ".env.example",
+      "target": "voxtral_model",
+      "relationship": "references",
+      "description": "Example configuration promotes unified Voxtral for STT+TTS (gated model)"
+    },
+    {
+      "source": ".env.example",
+      "target": ".env",
+      "relationship": "template_for",
+      "description": "Provides example configuration template for new installations"
+    },
+    {
+      "source": "INSTALL_VOXTRAL.md",
+      "target": "voxtral_model",
+      "relationship": "documents",
+      "description": "Comprehensive installation and setup guide for Voxtral-Mini-4B-Realtime model"
+    },
+    {
+      "source": "INSTALL_VOXTRAL.md",
+      "target": ".env.example",
+      "relationship": "references",
+      "description": "Instructs users to configure .env with HF_TOKEN and Voxtral settings"
+    },
+    {
+      "source": "INSTALL_VOXTRAL.md",
+      "target": "Makefile",
+      "relationship": "references",
+      "description": "Uses 'make voice' and 'make init' commands for testing and setup"
+    },
+    {
+      "source": "Makefile",
+      "target": ".env",
+      "relationship": "reads",
+      "description": "Loads HF_TOKEN from .env for voice target validation"
+    },
+    {
+      "source": "Makefile",
+      "target": ".env.example",
+      "relationship": "creates",
+      "description": "init target copies .env.example to .env if not present"
+    },
+    {
+      "source": "Makefile",
+      "target": "pyproject.toml",
+      "relationship": "uses",
+      "description": "Installs dependencies defined in pyproject.toml via pip install -e '.[dev,wake]'"
+    },
+    {
+      "source": "README.md",
+      "target": "Makefile",
+      "relationship": "documents",
+      "description": "Documents all make targets and CLI commands for project usage"
+    },
+    {
+      "source": "README.md",
+      "target": ".env",
+      "relationship": "documents",
+      "description": "Explains configuration options and environment variable setup"
+    },
+    {
+      "source": "README.md",
+      "target": "voxtral_model",
+      "relationship": "references",
+      "description": "Documents Voxtral-Mini-4B-Realtime as the STT engine with <500ms latency"
+    },
+    {
+      "source": "README.md",
+      "target": "csm_model",
+      "relationship": "references",
+      "description": "Documents Sesame CSM 1B as the preferred TTS engine"
+    },
+    {
+      "source": "README.md",
+      "target": "kokoro_model",
+      "relationship": "references",
+      "description": "Documents Kokoro ONNX as the TTS fallback option"
+    },
+    {
+      "source": "README.md",
+      "target": "pyproject.toml",
+      "relationship": "documents",
+      "description": "Describes project dependencies and optional extras (wake, dev)"
+    },
+    {
+      "source": "VOXTRAL_COMPLETE.md",
+      "target": "voxtral_model",
+      "relationship": "documents",
+      "description": "Final implementation report on Voxtral STT integration with performance benchmarks"
+    },
+    {
+      "source": "VOXTRAL_COMPLETE.md",
+      "target": "csm_model",
+      "relationship": "documents",
+      "description": "Documents decision to retain CSM/Kokoro for TTS (Voxtral is STT-only)"
+    },
+    {
+      "source": "VOXTRAL_COMPLETE.md",
+      "target": "kokoro_model",
+      "relationship": "documents",
+      "description": "Documents retention of Kokoro as proven TTS solution"
+    },
+    {
+      "source": "VOXTRAL_COMPLETE.md",
+      "target": "VOXTRAL_IMPLEMENTATION.md",
+      "relationship": "supersedes",
+      "description": "Corrects the unified approach documented in implementation guide - hybrid is final"
+    },
+    {
+      "source": "VOXTRAL_IMPLEMENTATION.md",
+      "target": "voxtral_model",
+      "relationship": "documents",
+      "description": "Technical implementation details of originally planned unified Voxtral engine"
+    },
+    {
+      "source": "VOXTRAL_IMPLEMENTATION.md",
+      "target": ".env.example",
+      "relationship": "documents",
+      "description": "Documents simplified configuration for unified Voxtral approach"
+    },
+    {
+      "source": "VOXTRAL_IMPLEMENTATION.md",
+      "target": "pyproject.toml",
+      "relationship": "documents",
+      "description": "Documents dependency changes for Voxtral migration (torch, transformers, etc.)"
+    },
+    {
+      "source": "pyproject.toml",
+      "target": "voxtral_model",
+      "relationship": "requires",
+      "description": "Includes transformers>=4.48.0 and torch>=2.5.0 for Voxtral support"
+    },
+    {
+      "source": "pyproject.toml",
+      "target": "csm_model",
+      "relationship": "supports",
+      "description": "Includes dependencies for CSM TTS engine via HuggingFace"
+    },
+    {
+      "source": "pyproject.toml",
+      "target": "kokoro_model",
+      "relationship": "requires",
+      "description": "Includes kokoro-onnx>=0.4.0 for TTS fallback"
+    },
+    {
+      "source": "config_voice_stt",
+      "target": "voxtral_model",
+      "relationship": "uses",
+      "description": "Can use Voxtral-Mini-4B-Realtime for real-time speech transcription"
+    },
+    {
+      "source": "config_voice_tts",
+      "target": "csm_model",
+      "relationship": "uses",
+      "description": "CSM engine option for high-quality conversational speech synthesis"
+    },
+    {
+      "source": "config_voice_tts",
+      "target": "kokoro_model",
+      "relationship": "uses",
+      "description": "Kokoro engine option for fast TTS fallback (current production)"
+    }
+  ]
+}

@@ -1,0 +1,887 @@
+{
+  "nodes": [
+    {
+      "id": "jarvis/core/personality.py",
+      "label": "personality.py",
+      "type": "module",
+      "language": "python",
+      "path": "jarvis/core/personality.py",
+      "description": "System prompt and proactive alert templates for Jarvis. Defines SYSTEM_PROMPT with style rules (voice output, TTS-friendly, no markdown), behavior guidelines (proactive monitoring, confirmation for destructive actions, coding help), and the proactive_alert function that formats alert messages.",
+      "metadata": {
+        "main_purpose": "personality_configuration",
+        "key_elements": [
+          "SYSTEM_PROMPT constant with voice-first style rules",
+          "proactive_alert function for TTS and Telegram alerts",
+          "Confirmation requirement for destructive actions",
+          "Jarvis persona addressing user as 'Sir'"
+        ]
+      }
+    },
+    {
+      "id": "jarvis/core/personality.py::SYSTEM_PROMPT",
+      "label": "SYSTEM_PROMPT",
+      "type": "constant",
+      "language": "python",
+      "path": "jarvis/core/personality.py",
+      "description": "Multi-line system prompt string defining Jarvis personality. Includes voice-optimized style rules (short sentences, no markdown, TTS-friendly), proactive behavior, confirmation workflow for destructive actions, and tool usage guidelines.",
+      "metadata": {
+        "line_start": 5,
+        "line_end": 33,
+        "key_rules": [
+          "Address user as Sir",
+          "No markdown or code fences",
+          "Confirm destructive actions",
+          "Proactive monitoring",
+          "Under 6 sentences unless asked"
+        ]
+      }
+    },
+    {
+      "id": "jarvis/core/personality.py::proactive_alert",
+      "label": "proactive_alert()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/core/personality.py",
+      "description": "Formats proactive alert messages for TTS or Telegram. Takes source, situation description, and optional suggested action. Returns 'Sir, {situation}. Shall I {action}?' or 'Sir, {situation}.' if no action provided.",
+      "metadata": {
+        "line_start": 36,
+        "line_end": 40,
+        "parameters": ["source: str", "situation: str", "suggested_action: str | None"],
+        "returns": "str"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py",
+      "label": "nodes.py",
+      "type": "module",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "LangGraph node functions for the Jarvis agent graph. Core orchestration logic including memory retrieval, LLM interaction via claude -p subprocess, tool calling with confirmation workflow, and response handling. Implements the think-act-observe-respond cycle.",
+      "metadata": {
+        "main_purpose": "agent_graph_nodes",
+        "key_features": [
+          "Memory-augmented system prompt building",
+          "Claude CLI subprocess streaming with sentence callbacks",
+          "Tool call confirmation for destructive operations",
+          "Multi-turn tool execution loop (MAX_TURNS=6)",
+          "Tool call parsing from markdown code blocks"
+        ]
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::retrieve_memory_node",
+      "label": "retrieve_memory_node()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "LangGraph node that retrieves relevant memories from Mem0Store based on the last user message. Returns up to 5 memories or empty list if mem0_store is None. Extracts last user message with string content from state.",
+      "metadata": {
+        "line_start": 27,
+        "line_end": 35,
+        "parameters": ["state: AgentState", "mem0_store: Mem0Store | None"],
+        "returns": "dict[str, Any]",
+        "node_type": "memory_retrieval"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::_build_system_with_memories",
+      "label": "_build_system_with_memories()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Private helper that augments SYSTEM_PROMPT with retrieved memories. If memories exist, appends section 'What you know about this user (strong priors, not absolute truth)' with bulleted memory list.",
+      "metadata": {
+        "line_start": 38,
+        "line_end": 43,
+        "parameters": ["memories: list[str]"],
+        "returns": "str"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::_build_claude_prompt",
+      "label": "_build_claude_prompt()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Converts message history to single prompt string for claude -p. Wraps system in <system> tags and messages in role tags. Handles list-based content with tool_result and tool_use blocks.",
+      "metadata": {
+        "line_start": 46,
+        "line_end": 64,
+        "parameters": ["system: str", "messages: list[dict]"],
+        "returns": "str",
+        "note": "Legacy function, not actively used by _run_claude"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::_run_claude",
+      "label": "_run_claude()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Async function that streams claude -p subprocess. Fires sentence_callback per sentence for TTS. Runs with --permission-mode bypassPermissions, --output-format stream-json, --verbose. OAuth from macOS keychain, no API key needed. Parses stream events for text deltas.",
+      "metadata": {
+        "line_start": 70,
+        "line_end": 156,
+        "parameters": ["system: str", "messages: list[dict]", "model: str", "sentence_callback: asyncio.coroutines | None"],
+        "returns": "str",
+        "key_flags": [
+          "--permission-mode bypassPermissions",
+          "--output-format stream-json",
+          "--verbose",
+          "--include-partial-messages"
+        ]
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::think_node",
+      "label": "think_node()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Main LLM reasoning node. Builds memory-augmented system prompt with tool descriptions. Runs multi-turn loop (MAX_TURNS=6) calling _run_claude, parsing tool calls from ```tool_call blocks, checking for confirmation requirements. Returns final response or pending action requiring confirmation.",
+      "metadata": {
+        "line_start": 158,
+        "line_end": 270,
+        "parameters": ["state: AgentState"],
+        "returns": "dict[str, Any]",
+        "node_type": "llm_reasoning",
+        "confirmation_tools": ["write_file", "run_shell", "create_event", "update_event", "send_email"]
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::act_node",
+      "label": "act_node()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Executes tool calls via toolbox.dispatch. Iterates over state tool_calls, dispatches each, collects results. Appends tool_result messages to conversation. Returns updated messages with results.",
+      "metadata": {
+        "line_start": 273,
+        "line_end": 286,
+        "parameters": ["state: AgentState", "toolbox: Toolbox"],
+        "returns": "dict[str, Any]",
+        "node_type": "tool_execution"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::observe_node",
+      "label": "observe_node()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Clears tool_results from state after they've been processed. Simple node that returns empty tool_results list if any existed.",
+      "metadata": {
+        "line_start": 289,
+        "line_end": 292,
+        "parameters": ["state: AgentState"],
+        "returns": "dict[str, Any]",
+        "node_type": "state_cleanup"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::respond_node",
+      "label": "respond_node()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Extracts final_response from state. If confirmation required, formats pending action message. Otherwise extracts text content from last assistant message, handling both string and list-based content formats.",
+      "metadata": {
+        "line_start": 295,
+        "line_end": 325,
+        "parameters": ["state: AgentState"],
+        "returns": "dict[str, Any]",
+        "node_type": "response_formatting"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::store_memory_node",
+      "label": "store_memory_node()",
+      "type": "function",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Stores user and assistant messages to Mem0Store for future retrieval. Extracts last user message and final_response, stores each with appropriate role. Returns empty dict (side-effect only node).",
+      "metadata": {
+        "line_start": 328,
+        "line_end": 339,
+        "parameters": ["state: AgentState", "mem0_store: Mem0Store | None"],
+        "returns": "dict[str, Any]",
+        "node_type": "memory_storage"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::CONFIRMATION_REQUIRED_TOOLS",
+      "label": "CONFIRMATION_REQUIRED_TOOLS",
+      "type": "constant",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Set of tool names requiring user confirmation before execution: write_file, run_shell, create_event, update_event, send_email. Used by think_node to gate destructive operations.",
+      "metadata": {
+        "line_start": 22,
+        "line_end": 22
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::TOOL_CALL_RE",
+      "label": "TOOL_CALL_RE",
+      "type": "constant",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Regex pattern to extract tool calls from LLM output. Matches ```tool_call markdown code blocks with JSON content. Used by think_node to parse tool invocations.",
+      "metadata": {
+        "line_start": 24,
+        "line_end": 24,
+        "pattern": "```tool_call\\s*\\n(.*?)\\n```"
+      }
+    },
+    {
+      "id": "jarvis/graph/nodes.py::MAX_TURNS",
+      "label": "MAX_TURNS",
+      "type": "constant",
+      "language": "python",
+      "path": "jarvis/graph/nodes.py",
+      "description": "Maximum number of think-act loop iterations. Set to 6 to prevent infinite tool calling loops.",
+      "metadata": {
+        "line_start": 20,
+        "line_end": 20,
+        "value": 6
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/calendar.py",
+      "label": "calendar.py",
+      "type": "module",
+      "language": "python",
+      "path": "jarvis/graph/proactive/calendar.py",
+      "description": "Calendar proactive monitor that polls Google Calendar and surfaces alerts. CalendarMonitor class checks for upcoming events within 30 minutes and invokes the agent graph to generate concise alerts via notify_fn.",
+      "metadata": {
+        "main_purpose": "proactive_calendar_monitoring",
+        "poll_default": 300
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/calendar.py::CalendarMonitor",
+      "label": "CalendarMonitor",
+      "type": "class",
+      "language": "python",
+      "path": "jarvis/graph/proactive/calendar.py",
+      "description": "Polls Google Calendar every poll_seconds (default 300s). Fetches next day's events, prompts agent graph to identify events requiring action (within 30 minutes), and sends alerts via notify_fn if response is not NO_ACTION.",
+      "metadata": {
+        "line_start": 14,
+        "line_end": 62,
+        "key_methods": ["__init__", "check_once", "run_forever"]
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/calendar.py::CalendarMonitor.__init__",
+      "label": "__init__()",
+      "type": "method",
+      "language": "python",
+      "path": "jarvis/graph/proactive/calendar.py",
+      "description": "Initializes CalendarMonitor with agent graph, calendar tools toolbox, notify callback, and poll interval in seconds.",
+      "metadata": {
+        "line_start": 15,
+        "line_end": 25,
+        "parameters": ["graph", "calendar_tools", "notify_fn: Callable[[str], Awaitable[None]]", "poll_seconds: int = 300"]
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/calendar.py::CalendarMonitor.check_once",
+      "label": "check_once()",
+      "type": "method",
+      "language": "python",
+      "path": "jarvis/graph/proactive/calendar.py",
+      "description": "Single calendar check. Fetches events for next day via calendar_tools.dispatch('list_events', days=1). Creates AgentState with monitoring prompt asking if any events need attention. Invokes graph and sends alert via notify_fn if response != NO_ACTION.",
+      "metadata": {
+        "line_start": 27,
+        "line_end": 56,
+        "trigger": "calendar",
+        "output_channel": "telegram"
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/calendar.py::CalendarMonitor.run_forever",
+      "label": "run_forever()",
+      "type": "method",
+      "language": "python",
+      "path": "jarvis/graph/proactive/calendar.py",
+      "description": "Infinite loop that runs check_once every poll_seconds. Logs start message with poll interval.",
+      "metadata": {
+        "line_start": 58,
+        "line_end": 62
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/email.py",
+      "label": "email.py",
+      "type": "module",
+      "language": "python",
+      "path": "jarvis/graph/proactive/email.py",
+      "description": "Email proactive monitor that polls Gmail and surfaces urgent items. EmailMonitor class checks for unread emails requiring decisions and invokes agent graph to generate one-sentence alerts with suggested actions.",
+      "metadata": {
+        "main_purpose": "proactive_email_monitoring",
+        "poll_default": 600
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/email.py::EmailMonitor",
+      "label": "EmailMonitor",
+      "type": "class",
+      "language": "python",
+      "path": "jarvis/graph/proactive/email.py",
+      "description": "Polls Gmail every poll_seconds (default 600s). Fetches up to 5 unread emails, prompts agent graph to identify urgent items requiring decisions, and sends alerts via notify_fn if response is not NO_ACTION.",
+      "metadata": {
+        "line_start": 14,
+        "line_end": 64,
+        "key_methods": ["__init__", "check_once", "run_forever"]
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/email.py::EmailMonitor.__init__",
+      "label": "__init__()",
+      "type": "method",
+      "language": "python",
+      "path": "jarvis/graph/proactive/email.py",
+      "description": "Initializes EmailMonitor with agent graph, email tools toolbox, notify callback, and poll interval in seconds.",
+      "metadata": {
+        "line_start": 15,
+        "line_end": 25,
+        "parameters": ["graph", "email_tools", "notify_fn: Callable[[str], Awaitable[None]]", "poll_seconds: int = 600"]
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/email.py::EmailMonitor.check_once",
+      "label": "check_once()",
+      "type": "method",
+      "language": "python",
+      "path": "jarvis/graph/proactive/email.py",
+      "description": "Single email check. Fetches unread emails via email_tools.dispatch('list_emails', query='is:unread', limit=5). Creates AgentState with monitoring prompt asking if anything is urgent. Invokes graph and sends alert via notify_fn if response != NO_ACTION.",
+      "metadata": {
+        "line_start": 27,
+        "line_end": 58,
+        "trigger": "email",
+        "output_channel": "telegram"
+      }
+    },
+    {
+      "id": "jarvis/graph/proactive/email.py::EmailMonitor.run_forever",
+      "label": "run_forever()",
+      "type": "method",
+      "language": "python",
+      "path": "jarvis/graph/proactive/email.py",
+      "description": "Infinite loop that runs check_once every poll_seconds. Logs start message with poll interval.",
+      "metadata": {
+        "line_start": 60,
+        "line_end": 64
+      }
+    },
+    {
+      "id": "jarvis/graph/state.py",
+      "label": "state.py",
+      "type": "module",
+      "language": "python",
+      "path": "jarvis/graph/state.py",
+      "description": "AgentState TypedDict definition for the LangGraph agent graph. Defines typed state structure with trigger source, message history, memories, tool calls/results, output channel, confirmation workflow fields, and passed-through objects (settings, toolbox, tts_callback).",
+      "metadata": {
+        "main_purpose": "state_schema_definition"
+      }
+    },
+    {
+      "id": "jarvis/graph/state.py::AgentState",
+      "label": "AgentState",
+      "type": "class",
+      "language": "python",
+      "path": "jarvis/graph/state.py",
+      "description": "TypedDict (total=False) defining LangGraph state schema. Fields include trigger (voice/calendar/email/watchdog), messages list, memories list, tool_calls/results, output_channel, final_response, confirmation workflow (requires_confirmation, pending_action), error, and pass-through objects (settings, toolbox, tts_callback).",
+      "metadata": {
+        "line_start": 10,
+        "line_end": 23,
+        "base": "TypedDict",
+        "total": false,
+        "fields": [
+          "trigger: str",
+          "messages: list[dict[str, Any]]",
+          "memories: list[str]",
+          "tool_calls: list[dict[str, Any]]",
+          "tool_results: list[dict[str, Any]]",
+          "output_channel: str",
+          "final_response: str",
+          "requires_confirmation: bool",
+          "pending_action: dict[str, Any] | None",
+          "error: str | None",
+          "settings: Any",
+          "toolbox: Any",
+          "tts_callback: Any"
+        ]
+      }
+    },
+    {
+      "id": "tests/test_core_personality.py",
+      "label": "test_core_personality.py",
+      "type": "module",
+      "language": "python",
+      "path": "tests/test_core_personality.py",
+      "description": "Unit tests for jarvis.core.personality module. Tests SYSTEM_PROMPT presence and length, and proactive_alert function formatting for different scenarios (calendar with/without action, email).",
+      "metadata": {
+        "main_purpose": "personality_unit_tests",
+        "test_count": 4
+      }
+    },
+    {
+      "id": "tests/test_core_personality.py::test_system_prompt_present",
+      "label": "test_system_prompt_present()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_core_personality.py",
+      "description": "Verifies SYSTEM_PROMPT contains 'Jarvis' and has meaningful length (>200 chars).",
+      "metadata": {
+        "line_start": 4,
+        "line_end": 6,
+        "test_type": "existence_check"
+      }
+    },
+    {
+      "id": "tests/test_core_personality.py::test_proactive_alert_calendar",
+      "label": "test_proactive_alert_calendar()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_core_personality.py",
+      "description": "Tests proactive_alert with calendar source and suggested action. Verifies situation and action appear in message with question mark.",
+      "metadata": {
+        "line_start": 9,
+        "line_end": 13,
+        "test_type": "output_format"
+      }
+    },
+    {
+      "id": "tests/test_core_personality.py::test_proactive_alert_email",
+      "label": "test_proactive_alert_email()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_core_personality.py",
+      "description": "Tests proactive_alert with email source and suggested action. Verifies CEO and draft keywords present.",
+      "metadata": {
+        "line_start": 16,
+        "line_end": 19,
+        "test_type": "output_format"
+      }
+    },
+    {
+      "id": "tests/test_core_personality.py::test_proactive_alert_no_action",
+      "label": "test_proactive_alert_no_action()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_core_personality.py",
+      "description": "Tests proactive_alert with no suggested action (None). Verifies situation appears and message is not empty.",
+      "metadata": {
+        "line_start": 22,
+        "line_end": 25,
+        "test_type": "output_format"
+      }
+    },
+    {
+      "id": "tests/test_graph_nodes.py",
+      "label": "test_graph_nodes.py",
+      "type": "module",
+      "language": "python",
+      "path": "tests/test_graph_nodes.py",
+      "description": "Unit tests for jarvis.graph.nodes module. Tests memory retrieval/storage nodes, respond_node output formatting, and confirmation workflow with mocked Mem0Store.",
+      "metadata": {
+        "main_purpose": "graph_nodes_unit_tests",
+        "test_count": 6
+      }
+    },
+    {
+      "id": "tests/test_graph_nodes.py::base_state",
+      "label": "base_state",
+      "type": "fixture",
+      "language": "python",
+      "path": "tests/test_graph_nodes.py",
+      "description": "Pytest fixture providing default AgentState for tests. Voice-triggered, single user message, empty memories/tool_calls, voice output channel.",
+      "metadata": {
+        "line_start": 7,
+        "line_end": 20
+      }
+    },
+    {
+      "id": "tests/test_graph_nodes.py::test_retrieve_memory_node_no_mem0",
+      "label": "test_retrieve_memory_node_no_mem0()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_graph_nodes.py",
+      "description": "Tests retrieve_memory_node with mem0_store=None. Verifies empty memories list returned.",
+      "metadata": {
+        "line_start": 23,
+        "line_end": 25,
+        "test_type": "null_handling"
+      }
+    },
+    {
+      "id": "tests/test_graph_nodes.py::test_retrieve_memory_node_with_results",
+      "label": "test_retrieve_memory_node_with_results()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_graph_nodes.py",
+      "description": "Tests retrieve_memory_node with mocked Mem0Store. Verifies retrieve called with last user message and limit=5, returns 2 memories.",
+      "metadata": {
+        "line_start": 28,
+        "line_end": 35,
+        "test_type": "integration_mock"
+      }
+    },
+    {
+      "id": "tests/test_graph_nodes.py::test_store_memory_node_calls_store",
+      "label": "test_store_memory_node_calls_store()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_graph_nodes.py",
+      "description": "Tests store_memory_node with mocked Mem0Store. Verifies store method called with user message and final_response.",
+      "metadata": {
+        "line_start": 38,
+        "line_end": 42,
+        "test_type": "integration_mock"
+      }
+    },
+    {
+      "id": "tests/test_graph_nodes.py::test_respond_node_sets_final_response",
+      "label": "test_respond_node_sets_final_response()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_graph_nodes.py",
+      "description": "Tests respond_node extracts final_response from last assistant message. Verifies exact text extraction.",
+      "metadata": {
+        "line_start": 45,
+        "line_end": 51,
+        "test_type": "output_extraction"
+      }
+    },
+    {
+      "id": "tests/test_graph_nodes.py::test_respond_node_confirmation_required",
+      "label": "test_respond_node_confirmation_required()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_graph_nodes.py",
+      "description": "Tests respond_node with requires_confirmation=True and pending_action. Verifies confirmation message contains tool name or confirm keyword.",
+      "metadata": {
+        "line_start": 54,
+        "line_end": 59,
+        "test_type": "confirmation_workflow"
+      }
+    },
+    {
+      "id": "tests/test_proactive_monitors.py",
+      "label": "test_proactive_monitors.py",
+      "type": "module",
+      "language": "python",
+      "path": "tests/test_proactive_monitors.py",
+      "description": "Unit tests for proactive monitors (CalendarMonitor, EmailMonitor). Tests single check execution, tool dispatching, and graph invocation with mocked dependencies.",
+      "metadata": {
+        "main_purpose": "proactive_monitors_unit_tests",
+        "test_count": 3
+      }
+    },
+    {
+      "id": "tests/test_proactive_monitors.py::mock_graph",
+      "label": "mock_graph",
+      "type": "fixture",
+      "language": "python",
+      "path": "tests/test_proactive_monitors.py",
+      "description": "Pytest fixture providing mocked LangGraph graph with ainvoke returning sample meeting response.",
+      "metadata": {
+        "line_start": 8,
+        "line_end": 12
+      }
+    },
+    {
+      "id": "tests/test_proactive_monitors.py::mock_calendar_tools",
+      "label": "mock_calendar_tools",
+      "type": "fixture",
+      "language": "python",
+      "path": "tests/test_proactive_monitors.py",
+      "description": "Pytest fixture providing mocked calendar tools with dispatch returning sample event.",
+      "metadata": {
+        "line_start": 15,
+        "line_end": 19
+      }
+    },
+    {
+      "id": "tests/test_proactive_monitors.py::mock_email_tools",
+      "label": "mock_email_tools",
+      "type": "fixture",
+      "language": "python",
+      "path": "tests/test_proactive_monitors.py",
+      "description": "Pytest fixture providing mocked email tools with dispatch returning sample urgent email.",
+      "metadata": {
+        "line_start": 22,
+        "line_end": 26
+      }
+    },
+    {
+      "id": "tests/test_proactive_monitors.py::test_calendar_monitor_runs_once",
+      "label": "test_calendar_monitor_runs_once()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_proactive_monitors.py",
+      "description": "Tests CalendarMonitor.check_once execution. Verifies list_events called with days=1.",
+      "metadata": {
+        "line_start": 29,
+        "line_end": 33,
+        "test_type": "async_integration"
+      }
+    },
+    {
+      "id": "tests/test_proactive_monitors.py::test_email_monitor_runs_once",
+      "label": "test_email_monitor_runs_once()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_proactive_monitors.py",
+      "description": "Tests EmailMonitor.check_once execution. Verifies email tools dispatch called.",
+      "metadata": {
+        "line_start": 36,
+        "line_end": 40,
+        "test_type": "async_integration"
+      }
+    },
+    {
+      "id": "tests/test_proactive_monitors.py::test_calendar_monitor_calls_notify_on_upcoming",
+      "label": "test_calendar_monitor_calls_notify_on_upcoming()",
+      "type": "function",
+      "language": "python",
+      "path": "tests/test_proactive_monitors.py",
+      "description": "Tests CalendarMonitor calls notify_fn and invokes graph when events exist.",
+      "metadata": {
+        "line_start": 43,
+        "line_end": 48,
+        "test_type": "async_integration"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "jarvis/graph/nodes.py",
+      "target": "jarvis/core/personality.py",
+      "relationship": "imports",
+      "metadata": {
+        "imported_symbols": ["SYSTEM_PROMPT"]
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py",
+      "target": "jarvis/graph/state.py",
+      "relationship": "imports",
+      "metadata": {
+        "imported_symbols": ["AgentState"]
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py",
+      "target": "jarvis/memory/mem0_store.py",
+      "relationship": "imports",
+      "metadata": {
+        "imported_symbols": ["Mem0Store"],
+        "import_type": "TYPE_CHECKING"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py",
+      "target": "jarvis/tools/registry.py",
+      "relationship": "imports",
+      "metadata": {
+        "imported_symbols": ["Toolbox"],
+        "import_type": "TYPE_CHECKING"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::_build_system_with_memories",
+      "target": "jarvis/core/personality.py::SYSTEM_PROMPT",
+      "relationship": "uses",
+      "metadata": {
+        "usage": "augments_with_memories"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::think_node",
+      "target": "jarvis/graph/nodes.py::_build_system_with_memories",
+      "relationship": "calls",
+      "metadata": {
+        "purpose": "build_memory_augmented_prompt"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::think_node",
+      "target": "jarvis/graph/nodes.py::_run_claude",
+      "relationship": "calls",
+      "metadata": {
+        "purpose": "invoke_llm_with_streaming"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::think_node",
+      "target": "jarvis/graph/nodes.py::TOOL_CALL_RE",
+      "relationship": "uses",
+      "metadata": {
+        "purpose": "parse_tool_calls"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::think_node",
+      "target": "jarvis/graph/nodes.py::CONFIRMATION_REQUIRED_TOOLS",
+      "relationship": "uses",
+      "metadata": {
+        "purpose": "check_confirmation_requirement"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::retrieve_memory_node",
+      "target": "jarvis/memory/mem0_store.py::Mem0Store",
+      "relationship": "uses",
+      "metadata": {
+        "method": "retrieve",
+        "purpose": "fetch_relevant_memories"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::store_memory_node",
+      "target": "jarvis/memory/mem0_store.py::Mem0Store",
+      "relationship": "uses",
+      "metadata": {
+        "method": "store",
+        "purpose": "persist_conversation_memories"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::act_node",
+      "target": "jarvis/tools/registry.py::Toolbox",
+      "relationship": "uses",
+      "metadata": {
+        "method": "dispatch",
+        "purpose": "execute_tool_calls"
+      }
+    },
+    {
+      "source": "jarvis/graph/proactive/calendar.py",
+      "target": "jarvis/graph/state.py",
+      "relationship": "imports",
+      "metadata": {
+        "imported_symbols": ["AgentState"]
+      }
+    },
+    {
+      "source": "jarvis/graph/proactive/calendar.py::CalendarMonitor.check_once",
+      "target": "jarvis/graph/state.py::AgentState",
+      "relationship": "creates",
+      "metadata": {
+        "trigger": "calendar",
+        "output_channel": "telegram"
+      }
+    },
+    {
+      "source": "jarvis/graph/proactive/email.py",
+      "target": "jarvis/graph/state.py",
+      "relationship": "imports",
+      "metadata": {
+        "imported_symbols": ["AgentState"]
+      }
+    },
+    {
+      "source": "jarvis/graph/proactive/email.py::EmailMonitor.check_once",
+      "target": "jarvis/graph/state.py::AgentState",
+      "relationship": "creates",
+      "metadata": {
+        "trigger": "email",
+        "output_channel": "telegram"
+      }
+    },
+    {
+      "source": "tests/test_core_personality.py",
+      "target": "jarvis/core/personality.py",
+      "relationship": "tests",
+      "metadata": {
+        "test_type": "unit_tests",
+        "tested_symbols": ["SYSTEM_PROMPT", "proactive_alert"]
+      }
+    },
+    {
+      "source": "tests/test_graph_nodes.py",
+      "target": "jarvis/graph/nodes.py",
+      "relationship": "tests",
+      "metadata": {
+        "test_type": "unit_tests",
+        "tested_symbols": ["retrieve_memory_node", "store_memory_node", "respond_node"]
+      }
+    },
+    {
+      "source": "tests/test_graph_nodes.py",
+      "target": "jarvis/graph/state.py",
+      "relationship": "imports",
+      "metadata": {
+        "imported_symbols": ["AgentState"]
+      }
+    },
+    {
+      "source": "tests/test_proactive_monitors.py",
+      "target": "jarvis/graph/proactive/calendar.py",
+      "relationship": "tests",
+      "metadata": {
+        "test_type": "unit_tests",
+        "tested_symbols": ["CalendarMonitor"]
+      }
+    },
+    {
+      "source": "tests/test_proactive_monitors.py",
+      "target": "jarvis/graph/proactive/email.py",
+      "relationship": "tests",
+      "metadata": {
+        "test_type": "unit_tests",
+        "tested_symbols": ["EmailMonitor"]
+      }
+    },
+    {
+      "source": "jarvis/graph/proactive/calendar.py::CalendarMonitor.run_forever",
+      "target": "jarvis/graph/proactive/calendar.py::CalendarMonitor.check_once",
+      "relationship": "calls",
+      "metadata": {
+        "pattern": "infinite_loop"
+      }
+    },
+    {
+      "source": "jarvis/graph/proactive/email.py::EmailMonitor.run_forever",
+      "target": "jarvis/graph/proactive/email.py::EmailMonitor.check_once",
+      "relationship": "calls",
+      "metadata": {
+        "pattern": "infinite_loop"
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::act_node",
+      "target": "jarvis/graph/state.py::AgentState",
+      "relationship": "modifies",
+      "metadata": {
+        "fields_modified": ["messages", "tool_results", "tool_calls"]
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::think_node",
+      "target": "jarvis/graph/state.py::AgentState",
+      "relationship": "modifies",
+      "metadata": {
+        "fields_modified": ["messages", "tool_calls", "requires_confirmation", "pending_action", "final_response", "error"]
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::retrieve_memory_node",
+      "target": "jarvis/graph/state.py::AgentState",
+      "relationship": "modifies",
+      "metadata": {
+        "fields_modified": ["memories"]
+      }
+    },
+    {
+      "source": "jarvis/graph/nodes.py::respond_node",
+      "target": "jarvis/graph/state.py::AgentState",
+      "relationship": "reads",
+      "metadata": {
+        "fields_read": ["messages", "requires_confirmation", "pending_action"]
+      }
+    }
+  ]
+}

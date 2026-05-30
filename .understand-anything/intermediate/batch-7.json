@@ -1,0 +1,173 @@
+{
+  "nodes": [
+    {
+      "id": ".claude/settings.json",
+      "label": "settings.json",
+      "path": ".claude/settings.json",
+      "type": "config",
+      "description": "Claude CLI permissions configuration with extensive allowlist for test commands, git operations, Python REPL, pytest, and various jarvis-specific commands. Includes /tmp as additional working directory."
+    },
+    {
+      "id": ".claude/settings.local.json",
+      "label": "settings.local.json",
+      "path": ".claude/settings.local.json",
+      "type": "config",
+      "description": "Local development permissions for testing voice dependencies, checking CSM availability, running pytest, managing processes, and accessing user home directories and HF cache."
+    },
+    {
+      "id": "docs/superpowers/plans/2026-04-23-jarvis-full-revision.md",
+      "label": "jarvis-full-revision.md",
+      "path": "docs/superpowers/plans/2026-04-23-jarvis-full-revision.md",
+      "type": "docs",
+      "description": "Comprehensive implementation plan for rewriting Jarvis from flat vLLM/Qwen voice loop into proactive personal AI with LangGraph orchestration, mem0 memory, Claude API brain, Google Calendar/Gmail integration, Kokoro TTS, and background monitors."
+    },
+    {
+      "id": "docs/superpowers/specs/2026-04-23-jarvis-full-revision-design.md",
+      "label": "jarvis-full-revision-design.md",
+      "path": "docs/superpowers/specs/2026-04-23-jarvis-full-revision-design.md",
+      "type": "docs",
+      "description": "Design specification for Jarvis full revision. Describes architecture with reactive and proactive modes, LangGraph agent graph, mem0 memory layers (episodic/semantic/graph), tool registry, voice pipeline changes, and Google integration."
+    },
+    {
+      "id": "docs/VOXTRAL_IMPLEMENTATION.md",
+      "label": "VOXTRAL_IMPLEMENTATION.md",
+      "path": "docs/VOXTRAL_IMPLEMENTATION.md",
+      "type": "docs",
+      "description": "Documentation for hybrid approach using Voxtral-Mini-4B-Realtime for STT (speech-to-text) with <500ms latency and CSM/Kokoro for TTS. Explains that Voxtral is STT-only, not a unified speech model."
+    },
+    {
+      "id": "docs/VOXTRAL_MIGRATION.md",
+      "label": "VOXTRAL_MIGRATION.md",
+      "path": "docs/VOXTRAL_MIGRATION.md",
+      "type": "docs",
+      "description": "Migration guide for transitioning from separate faster-whisper STT and CSM/Kokoro TTS to unified Voxtral-Mini-4B-Realtime model. Documents configuration changes, dependency updates, and rollback procedures."
+    },
+    {
+      "id": "jarvis/__init__.py",
+      "label": "__init__.py",
+      "path": "jarvis/__init__.py",
+      "type": "code",
+      "description": "Package initialization file defining Jarvis version 0.1.0 and package docstring."
+    },
+    {
+      "id": "jarvis/core/__init__.py",
+      "label": "__init__.py",
+      "path": "jarvis/core/__init__.py",
+      "type": "code",
+      "description": "Empty package initialization file for jarvis.core module."
+    },
+    {
+      "id": "jarvis/graph/proactive/__init__.py",
+      "label": "__init__.py",
+      "path": "jarvis/graph/proactive/__init__.py",
+      "type": "code",
+      "description": "Empty package initialization file for jarvis.graph.proactive module containing background monitoring tasks."
+    },
+    {
+      "id": "jarvis/integrations/__init__.py",
+      "label": "__init__.py",
+      "path": "jarvis/integrations/__init__.py",
+      "type": "code",
+      "description": "Empty package initialization file for jarvis.integrations module containing external service integrations."
+    },
+    {
+      "id": "jarvis/memory/__init__.py",
+      "label": "__init__.py",
+      "path": "jarvis/memory/__init__.py",
+      "type": "code",
+      "description": "Empty package initialization file for jarvis.memory module containing memory storage implementations."
+    },
+    {
+      "id": "jarvis/tools/web_tools.py",
+      "label": "web_tools.py",
+      "path": "jarvis/tools/web_tools.py",
+      "type": "code",
+      "description": "Web search and page fetch utilities. Provides web_search() supporting both Brave Search API (if key provided) and DuckDuckGo fallback, plus fetch_page() for extracting clean text from URLs using trafilatura."
+    },
+    {
+      "id": "jarvis/voice/__init__.py",
+      "label": "__init__.py",
+      "path": "jarvis/voice/__init__.py",
+      "type": "code",
+      "description": "Empty package initialization file for jarvis.voice module containing speech recognition and synthesis components."
+    },
+    {
+      "id": "tests/__init__.py",
+      "label": "__init__.py",
+      "path": "tests/__init__.py",
+      "type": "code",
+      "description": "Empty package initialization file for tests module."
+    },
+    {
+      "id": "tests/test_agent_streaming.py",
+      "label": "test_agent_streaming.py",
+      "path": "tests/test_agent_streaming.py",
+      "type": "code",
+      "description": "Test suite for sentence streaming functionality. Tests stream_sentences() function which splits token streams into complete sentences with proper boundary detection and tail flushing."
+    },
+    {
+      "id": "tests/test_memory.py",
+      "label": "test_memory.py",
+      "path": "tests/test_memory.py",
+      "type": "code",
+      "description": "Comprehensive test suite for memory module. Tests Memory class with episode logging, profile storage/retrieval, profile distillation with LLM, and format_profile_block() utility. Tests both enabled and disabled memory modes."
+    },
+    {
+      "id": "tests/test_streaming_pipeline.py",
+      "label": "test_streaming_pipeline.py",
+      "path": "tests/test_streaming_pipeline.py",
+      "type": "code",
+      "description": "Tests for streaming sentence processing and TTS pipeline. Tests SentenceSplitter for incremental sentence emission, paragraph breaks, and speak_stream() for coordinating TTS synthesis and audio playback."
+    }
+  ],
+  "edges": [
+    {
+      "source": "jarvis/tools/web_tools.py",
+      "target": "duckduckgo_search",
+      "type": "imports",
+      "label": "imports"
+    },
+    {
+      "source": "jarvis/tools/web_tools.py",
+      "target": "httpx",
+      "type": "imports",
+      "label": "imports"
+    },
+    {
+      "source": "jarvis/tools/web_tools.py",
+      "target": "trafilatura",
+      "type": "imports",
+      "label": "imports"
+    },
+    {
+      "source": "tests/test_agent_streaming.py",
+      "target": "jarvis.streaming",
+      "type": "imports",
+      "label": "imports"
+    },
+    {
+      "source": "tests/test_memory.py",
+      "target": "jarvis.memory",
+      "type": "imports",
+      "label": "imports"
+    },
+    {
+      "source": "tests/test_streaming_pipeline.py",
+      "target": "jarvis.streaming",
+      "type": "imports",
+      "label": "imports"
+    },
+    {
+      "source": "docs/superpowers/plans/2026-04-23-jarvis-full-revision.md",
+      "target": "docs/superpowers/specs/2026-04-23-jarvis-full-revision-design.md",
+      "type": "references",
+      "label": "implements design from"
+    },
+    {
+      "source": "docs/VOXTRAL_MIGRATION.md",
+      "target": "docs/VOXTRAL_IMPLEMENTATION.md",
+      "type": "references",
+      "label": "migration guide for"
+    }
+  ]
+}

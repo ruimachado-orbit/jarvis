@@ -1,0 +1,156 @@
+[
+  {
+    "order": 1,
+    "title": "Welcome to Jarvis: Voice-First Coding Assistant",
+    "description": "Start with the README to understand what Jarvis does: a voice-activated local AI assistant that listens for 'hey Jarvis', transcribes your question with Voxtral STT (<500ms latency), routes it to Claude via the CLI, and streams the answer back through CSM/Kokoro TTS sentence-by-sentence. It includes a Telegram bridge for remote chat and proactive notifications. Everything runs locally with no API keys except for Claude OAuth.",
+    "nodeIds": ["file:README.md"]
+  },
+  {
+    "order": 2,
+    "title": "Entry Point: CLI Commands",
+    "description": "The main.py entry point defines all user-facing commands via Typer: 'voice' (hands-free voice loop), 'chat' (text REPL), 'ask' (one-shot query), 'telegram' (bridge only), 'watch' (file monitoring with Telegram alerts), 'notify' (push notifications), and 'auth' (Google OAuth for Calendar/Gmail). The voice command orchestrates the entire voice pipeline including wake word detection, VAD-gated recording, STT, LLM streaming, TTS synthesis, and playback with filler phrases during long operations.",
+    "nodeIds": [
+      "file:jarvis/__main__.py",
+      "file:jarvis/main.py",
+      "file:jarvis/main.py::app",
+      "file:jarvis/main.py::voice",
+      "function:__nofilepath__:jarvis/main.py::_voice_main"
+    ]
+  },
+  {
+    "order": 3,
+    "title": "Configuration: Pydantic Settings",
+    "description": "All settings live in a Pydantic BaseSettings class loaded from .env with JARVIS_ prefix. This includes LLM model/temperature, STT language, TTS engine/voice, audio devices, wake word settings, workspace safety controls (allow_writes, allow_shell), Google credentials paths, Brave API key for web search, mem0 memory toggle, Telegram token/chat IDs, and proactive monitor poll intervals. The singleton pattern ensures one Settings instance across the app.",
+    "nodeIds": [
+      "class:__nofilepath__:Settings",
+      "function:__nofilepath__:get_settings",
+      "file:jarvis/core/session.py",
+      "function:__nofilepath__:jarvis/core/session.py::build_session"
+    ]
+  },
+  {
+    "order": 4,
+    "title": "Agent Orchestration: LangGraph State Machine",
+    "description": "The agent graph is built with LangGraph nodes that form a think-act-observe-respond cycle. The flow: retrieve_memory_node loads relevant facts from Mem0Store, think_node invokes Claude via subprocess streaming, act_node executes tool calls with confirmation workflow for destructive operations (write_file, run_shell, send_email), observe_node collects results, respond_node finalizes the reply, and store_memory_node persists new facts. The graph supports up to MAX_TURNS=6 tool loops per conversation turn and streams sentences to a TTS callback for real-time audio synthesis.",
+    "nodeIds": [
+      "file:jarvis/graph/agent.py",
+      "function:__nofilepath__:jarvis/graph/agent.py::build_graph",
+      "function:__nofilepath__:jarvis/graph/agent.py::run_turn",
+      "module:jarvis/graph/nodes.py",
+      "function:__nofilepath__:jarvis/graph/nodes.py::retrieve_memory_node",
+      "function:__nofilepath__:jarvis/graph/nodes.py::think_node",
+      "function:__nofilepath__:jarvis/graph/nodes.py::act_node",
+      "function:__nofilepath__:jarvis/graph/nodes.py::respond_node"
+    ]
+  },
+  {
+    "order": 5,
+    "title": "Voice Pipeline: Voxtral STT, CSM TTS, Audio I/O",
+    "description": "The voice pipeline combines three components: STT uses Mistral Voxtral-Mini-4B-Realtime for <500ms transcription latency (bf16 on MPS/CUDA), with resampling to 16kHz, low-energy rejection (RMS < 0.001), and hallucination filtering. TTS offers two engines: CSM 1B (preferred) and Kokoro ONNX (fallback), both with disk-based phrase caching for instant playback of acks/fillers. AudioIO handles VAD-gated recording with webrtcvad, echo management (tail hold + mute window), and serial playback with an Iron Man-inspired boot sound. The streaming module buffers tokens into complete sentences for TTS-friendly synthesis.",
+    "nodeIds": [
+      "class:__nofilepath__:STT",
+      "file:jarvis.voice.stt.STT.transcribe",
+      "function:__nofilepath__:_load_voxtral",
+      "class:__nofilepath__:jarvis/voice/tts.py::TTS",
+      "file:jarvis/voice/tts.py::TTS::synthesize",
+      "file:jarvis/voice/tts.py::TTS::prewarm",
+      "class:__nofilepath__:jarvis/voice/audio.py::AudioIO",
+      "file:jarvis/voice/audio.py::AudioIO::record_utterance",
+      "function:__nofilepath__:jarvis/voice/streaming.py::stream_sentences"
+    ]
+  },
+  {
+    "order": 6,
+    "title": "Wake Word Detection: openWakeWord + STT Fallback",
+    "description": "Wake word detection uses openWakeWord with the hey_jarvis model for real-time phrase detection. If openWakeWord is unavailable, it falls back to STT-based keyword matching (fuzzy match on 'jarvis' in the transcript). The voice loop supports a wake/sleep state machine: sleeping mode ignores all input except wake phrases, and the user can toggle states via Cmd+J keyboard shortcut (macOS) or by saying 'jarvis sleep'. Each state transition plays a themed sound effect (boot chime / power-down tone) and speaks a confirmation phrase.",
+    "nodeIds": [
+      "file:jarvis/voice/wake.py",
+      "class:__nofilepath__:jarvis/voice/wake.py::WakeWord",
+      "file:jarvis/voice/wake.py::WakeWord::wait_for_wake",
+      "file:jarvis/voice/wake.py::WakeWord::matches_text",
+      "function:__nofilepath__:jarvis/main.py::_keyboard_listener"
+    ]
+  },
+  {
+    "order": 7,
+    "title": "Tool Execution: Coding, Web, Memory, Calendar, Email",
+    "description": "The unified Toolbox registry dispatches tool calls to domain-specific handlers. Coding tools (read_file, list_dir, grep, write_file, run_shell) enforce workspace boundaries, size limits (200KB max), and safety flags. Web tools (web_search via Brave API + DuckDuckGo fallback, fetch_page) enable internet access. Memory tools (remember, recall, forget) interact with the Mem0Store. Calendar tools (list_events, create_event, update_event, find_free_slot) and Email tools (list_emails, read_email, draft_reply, send_email with allow_send safety flag) integrate with Google services via OAuth 2.0. All tools are exposed as OpenAI-style function schemas in TOOL_SCHEMAS.",
+    "nodeIds": [
+      "class:__nofilepath__:Toolbox",
+      "file:jarvis.tools.registry.Toolbox.dispatch",
+      "file:jarvis.tools.registry.TOOL_SCHEMAS",
+      "file:jarvis.tools.coding.Toolbox.read_file",
+      "file:jarvis.tools.coding.Toolbox.grep",
+      "file:jarvis.tools.coding.Toolbox.write_file",
+      "file:jarvis.tools.coding.Toolbox.run_shell",
+      "class:__nofilepath__:jarvis/tools/calendar_tools.py::CalendarTools",
+      "class:__nofilepath__:jarvis/tools/email_tools.py::EmailTools"
+    ]
+  },
+  {
+    "order": 8,
+    "title": "Memory: Mem0Store with FastEmbed + ChromaDB",
+    "description": "Jarvis uses a mem0-free memory store that combines fastembed embeddings (BAAI/bge-small-en-v1.5), ChromaDB vector database, and Claude CLI for fact extraction. The store provides four operations: retrieve (semantic search via cosine similarity), store (extract memorable facts from text using Claude subprocess and upsert to vector DB), remember (explicit storage without extraction), and forget (delete similar embeddings). This enables Jarvis to build long-term context across conversations without requiring the paid mem0 service.",
+    "nodeIds": [
+      "file:jarvis/memory/mem0_store.py",
+      "class:__nofilepath__:jarvis/memory/mem0_store.py::Mem0Store",
+      "file:jarvis/memory/mem0_store.py::Mem0Store::retrieve",
+      "file:jarvis/memory/mem0_store.py::Mem0Store::store",
+      "file:jarvis/memory/mem0_store.py::Mem0Store::remember",
+      "file:jarvis/memory/mem0_store.py::Mem0Store::forget",
+      "file:jarvis/memory/mem0_store.py::Mem0Store::_extract_facts"
+    ]
+  },
+  {
+    "order": 9,
+    "title": "Telegram Bridge: Remote Chat & Push Notifications",
+    "description": "The TelegramBridge enables remote interaction and proactive alerts. It runs a python-telegram-bot application with handlers for /start, /help, /whoami, /ask, and plain text messages. Access control via JARVIS_TELEGRAM_ALLOWED_CHATS ensures only authorized users can interact. The bridge also provides a notify method for push notifications sent to JARVIS_TELEGRAM_NOTIFY_CHAT, used by proactive monitors (calendar, email, watchdog) to alert the user about upcoming events, unread emails, or file system changes. All conversation history is maintained per-session for context continuity.",
+    "nodeIds": [
+      "file:jarvis/telegram_bot.py",
+      "class:__nofilepath__:jarvis/telegram_bot.py::TelegramBridge",
+      "file:jarvis/telegram_bot.py::TelegramBridge::start",
+      "file:jarvis/telegram_bot.py::TelegramBridge::notify",
+      "file:jarvis/main.py::telegram",
+      "function:__nofilepath__:jarvis/main.py::_telegram_main"
+    ]
+  },
+  {
+    "order": 10,
+    "title": "Proactive Monitoring: Calendar, Email, Watchdog",
+    "description": "Jarvis runs background monitors that poll external services and trigger alerts. CalendarMonitor checks for upcoming events (default: 15 minutes before start time) and invokes the agent graph to generate natural language alerts sent via Telegram. EmailMonitor polls for new unread emails and notifies the user with sender/subject summaries. WatchdogMonitor uses watchfiles to watch filesystem paths for changes, optionally running a command (e.g., pytest) after each change and pushing the output to Telegram. All monitors support configurable poll intervals and debounce windows, and they integrate with the agent graph for intelligent alert generation.",
+    "nodeIds": [
+      "file:jarvis/graph/proactive/watchdog.py",
+      "class:__nofilepath__:jarvis/graph/proactive/watchdog.py::WatchdogMonitor",
+      "file:jarvis/graph/proactive/watchdog.py::WatchdogMonitor::run_forever",
+      "module:jarvis/graph/proactive/calendar.py",
+      "class:__nofilepath__:jarvis/graph/proactive/calendar.py::CalendarMonitor",
+      "module:jarvis/graph/proactive/email.py",
+      "class:__nofilepath__:jarvis/graph/proactive/email.py::EmailMonitor",
+      "file:jarvis/main.py::watch",
+      "function:__nofilepath__:jarvis/main.py::_watch_main"
+    ]
+  },
+  {
+    "order": 11,
+    "title": "Personality & System Prompt: Voice-First Style",
+    "description": "Jarvis's personality is defined in the SYSTEM_PROMPT constant with voice-optimized style rules: short sentences (under 6 unless asked), no markdown or code fences (TTS-unfriendly), address user as 'Sir', confirm destructive actions before executing, and proactively monitor external services. The proactive_alert function formats situation/action alerts with the signature 'Sir, {situation}. Shall I {action}?' for natural spoken interaction. This prompt is augmented with retrieved memories before each LLM turn to maintain personalized context.",
+    "nodeIds": [
+      "module:jarvis/core/personality.py",
+      "file:jarvis/core/personality.py::SYSTEM_PROMPT",
+      "function:__nofilepath__:jarvis/core/personality.py::proactive_alert",
+      "function:__nofilepath__:jarvis/graph/nodes.py::_build_system_with_memories"
+    ]
+  },
+  {
+    "order": 12,
+    "title": "Google OAuth Integration: Calendar & Gmail",
+    "description": "Google integration uses OAuth 2.0 with local server flow for Calendar (read/write events, find free slots) and Gmail (read/compose/send emails). The get_credentials function handles token refresh and re-authorization via browser when expired. Tokens persist to disk (~/.jarvis/google-token.json by default). The build_services factory creates ready-to-use calendar_service and gmail_service objects. These are injected into the toolbox via inject_google during session initialization, gracefully handling missing credentials with log warnings.",
+    "nodeIds": [
+      "file:jarvis/integrations/google_auth.py",
+      "function:__nofilepath__:jarvis/integrations/google_auth.py::get_credentials",
+      "function:__nofilepath__:jarvis/integrations/google_auth.py::build_services",
+      "function:__nofilepath__:jarvis/core/session.py::inject_google",
+      "file:jarvis/main.py::auth_google"
+    ]
+  }
+]

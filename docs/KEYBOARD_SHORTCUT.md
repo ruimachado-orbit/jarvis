@@ -1,8 +1,8 @@
-# Keyboard Shortcut: Cmd+J Wake/Sleep Toggle
+# Keyboard Shortcut: Cmd+Shift+S Wake/Sleep Toggle
 
 ## Feature
 
-Press **Cmd+J** once to toggle Jarvis between wake and sleep states:
+Press **Cmd+Shift+S** once to toggle Jarvis between wake and sleep states:
 - **First press (sleeping)**: Wakes up Jarvis → "At your service, Sir."
 - **Second press (awake)**: Puts Jarvis to sleep → "Very good, Sir. Powering down."
 
@@ -50,23 +50,23 @@ You: "Jarvis sleep"                  → Jarvis goes to sleep
 
 ### Keyboard Control (After Setup)
 ```
-Press: Cmd+J                         → Jarvis wakes up
+Press: Cmd+Shift+S                   → Jarvis wakes up
 You: "What is the weather today?"    → Jarvis responds  
-Press: Cmd+J                         → Jarvis goes to sleep
+Press: Cmd+Shift+S                   → Jarvis goes to sleep
 ```
 
 ### Combined Usage
 ```
 You: "Hey Jarvis"                    → Jarvis wakes up
 You: "What is the time?"             → Jarvis responds
-Press: Cmd+J                         → Jarvis goes to sleep (no need to say "Jarvis sleep")
+Press: Cmd+Shift+S                   → Jarvis goes to sleep (no need to say "Jarvis sleep")
 ```
 
 ## Behavior
 
-- **Debounced**: Pressing Cmd+J multiple times quickly only registers once (500ms debounce)
+- **Debounced**: Pressing Cmd+Shift+S multiple times quickly only registers once (500ms debounce)
 - **Audio feedback**: Plays boot/sleep sounds just like voice commands
-- **Visual feedback**: Shows "⌨️  Cmd+J: Waking up" / "⌨️  Cmd+J: Powering down" in terminal
+- **Visual feedback**: Shows "⌨️  Cmd+Shift+S: Waking up" / "⌨️  Cmd+Shift+S: Powering down" in terminal
 - **Non-blocking**: Doesn't interfere with voice commands or ongoing responses
 
 ## Technical Details
@@ -101,29 +101,29 @@ Press: Cmd+J                         → Jarvis goes to sleep (no need to say "J
 **Check**:
 1. Are you on macOS? (Only supported platform)
 2. Did you grant Accessibility permissions?
-3. Is another app using Cmd+J? (e.g., some IDEs use it for navigation)
+3. Is another app using Cmd+Shift+S? (Unlikely - less common than Cmd+J)
 
 **Test**:
 ```bash
 python test_keyboard.py
-# Press Cmd+J a few times
-# Should see: "✓ Cmd+J pressed! (count: 1)" etc.
+# Press Cmd+Shift+S a few times
+# Should see: "✓ Cmd+Shift+S pressed! (count: 1)" etc.
 ```
 
 ### Want to Change the Shortcut?
 Edit `jarvis/main.py`, line ~88:
 ```python
 with keyboard.GlobalHotKeys({
-    '<cmd>+k': on_activate,  # Change to Cmd+K
-    '<ctrl>+j': on_activate,  # Or Ctrl+J
+    '<cmd>+<shift>+k': on_activate,  # Change to Cmd+Shift+K
+    '<ctrl>+<shift>+s': on_activate,  # Or Ctrl+Shift+S
 }) as listener:
 ```
 
 Common alternatives:
-- `<cmd>+k` — Cmd+K
-- `<ctrl>+j` — Ctrl+J
-- `<alt>+j` — Option+J (macOS)
-- `<cmd>+<shift>+j` — Cmd+Shift+J
+- `<cmd>+<shift>+k` — Cmd+Shift+K
+- `<ctrl>+<shift>+s` — Ctrl+Shift+S
+- `<cmd>+<alt>+s` — Cmd+Option+S (macOS)
+- `<cmd>+j` — Cmd+J (simpler, but may conflict with IDEs)
 
 ## Disable Keyboard Shortcut
 

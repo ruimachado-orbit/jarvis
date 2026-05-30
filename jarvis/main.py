@@ -81,9 +81,9 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
 # ----- voice -----
 
 async def _keyboard_listener(toggle_event: asyncio.Event, stop_event: asyncio.Event):
-    """Listen for Cmd+J keyboard shortcut to toggle wake/sleep.
+    """Listen for Cmd+Shift+S keyboard shortcut to toggle wake/sleep.
 
-    Sets toggle_event when Cmd+J is pressed. Runs in executor since pynput is sync.
+    Sets toggle_event when Cmd+Shift+S is pressed. Runs in executor since pynput is sync.
     Only active on macOS.
     """
     from pynput import keyboard
@@ -92,7 +92,7 @@ async def _keyboard_listener(toggle_event: asyncio.Event, stop_event: asyncio.Ev
     last_toggle = [0.0]  # Mutable container for closure
 
     def on_activate():
-        """Called when Cmd+J is pressed."""
+        """Called when Cmd+Shift+S is pressed."""
         now = time.time()
 
         # Debounce: ignore if pressed within 500ms
@@ -106,8 +106,8 @@ async def _keyboard_listener(toggle_event: asyncio.Event, stop_event: asyncio.Ev
 
     # Set up global hotkey listener (runs in blocking mode)
     with keyboard.GlobalHotKeys({
-        '<cmd>+j': on_activate,
-        '<cmd>+J': on_activate,
+        '<cmd>+<shift>+s': on_activate,
+        '<cmd>+<shift>+S': on_activate,
     }) as listener:
         listener.start()
         # Wait for stop signal
@@ -494,8 +494,8 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     _install_signal_handlers(stop)
 
     sleeping = True
-    toggle_event = asyncio.Event()  # Signals Cmd+J press
-    console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] or press [bold]Cmd+J[/] to wake me. Ctrl-C to quit.")
+    toggle_event = asyncio.Event()  # Signals Cmd+Shift+S press
+    console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] or press [bold]Cmd+Shift+S[/] to wake me. Ctrl-C to quit.")
 
     # Keyboard shortcut handler (Cmd+J to toggle wake/sleep)
     keyboard_task = None
@@ -506,16 +506,16 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
 
     try:
         while not stop.is_set():
-            # Check for keyboard toggle (Cmd+J)
+            # Check for keyboard toggle (Cmd+Shift+S)
             if toggle_event.is_set():
                 toggle_event.clear()
                 sleeping = not sleeping
                 if sleeping:
-                    console.print("[bold yellow]⌨️  Cmd+J:[/] [dim]Powering down[/]")
+                    console.print("[bold yellow]⌨️  Cmd+Shift+S:[/] [dim]Powering down[/]")
                     await _speak_direct(SLEEP_RESPONSE)
                     await audio.play_sleep_sound()
                 else:
-                    console.print("[bold yellow]⌨️  Cmd+J:[/] [green]Waking up[/]")
+                    console.print("[bold yellow]⌨️  Cmd+Shift+S:[/] [green]Waking up[/]")
                     await audio.play_boot_sound()
                     await _speak_direct(WAKE_RESPONSE)
                 continue

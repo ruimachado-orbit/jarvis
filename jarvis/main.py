@@ -80,6 +80,42 @@ def _install_signal_handlers(stop: asyncio.Event) -> None:
 
 # ----- voice -----
 
+async def _keyboard_listener(toggle_event: asyncio.Event, stop_event: asyncio.Event):
+    """Listen for Cmd+J keyboard shortcut to toggle wake/sleep.
+
+    Sets toggle_event when Cmd+J is pressed. Runs in executor since pynput is sync.
+    Only active on macOS.
+    """
+    from pynput import keyboard
+    import time
+
+    last_toggle = [0.0]  # Mutable container for closure
+
+    def on_activate():
+        """Called when Cmd+J is pressed."""
+        now = time.time()
+
+        # Debounce: ignore if pressed within 500ms
+        if now - last_toggle[0] < 0.5:
+            return
+        last_toggle[0] = now
+
+        # Signal the main loop to toggle
+        loop = asyncio.get_event_loop()
+        loop.call_soon_threadsafe(toggle_event.set)
+
+    # Set up global hotkey listener (runs in blocking mode)
+    with keyboard.GlobalHotKeys({
+        '<cmd>+j': on_activate,
+        '<cmd>+J': on_activate,
+    }) as listener:
+        listener.start()
+        # Wait for stop signal
+        while not stop_event.is_set():
+            await asyncio.sleep(0.1)
+        listener.stop()
+
+
 @app.command()
 def voice(
     stream: Optional[bool] = typer.Option(None, "--stream/--no-stream"),
@@ -458,13 +494,38 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     _install_signal_handlers(stop)
 
     sleeping = True
-    console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] to wake me. Ctrl-C to quit.")
+    toggle_event = asyncio.Event()  # Signals Cmd+J press
+    console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] or press [bold]Cmd+J[/] to wake me. Ctrl-C to quit.")
+
+    # Keyboard shortcut handler (Cmd+J to toggle wake/sleep)
+    keyboard_task = None
+    if sys.platform == "darwin":  # macOS only
+        keyboard_task = asyncio.create_task(_keyboard_listener(toggle_event, stop))
 
     watcher_task = asyncio.create_task(_mic_loop(stop))
 
     try:
         while not stop.is_set():
-            pcm = await _captured.get()
+            # Check for keyboard toggle (Cmd+J)
+            if toggle_event.is_set():
+                toggle_event.clear()
+                sleeping = not sleeping
+                if sleeping:
+                    console.print("[bold yellow]⌨️  Cmd+J:[/] [dim]Powering down[/]")
+                    await _speak_direct(SLEEP_RESPONSE)
+                    await audio.play_sleep_sound()
+                else:
+                    console.print("[bold yellow]⌨️  Cmd+J:[/] [green]Waking up[/]")
+                    await audio.play_boot_sound()
+                    await _speak_direct(WAKE_RESPONSE)
+                continue
+
+            # Wait for either voice input or keyboard toggle
+            try:
+                pcm = await asyncio.wait_for(_captured.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+
             if pcm.size == 0:
                 continue
 
@@ -497,6 +558,12 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             console.print(reply)
 
     finally:
+        if keyboard_task:
+            keyboard_task.cancel()
+            try:
+                await keyboard_task
+            except asyncio.CancelledError:
+                pass
         watcher_task.cancel()
         try:
             await watcher_task

@@ -60,7 +60,7 @@ def _pick_input_device() -> int | None:
 class AudioIO:
     # Seconds to keep _is_playing True after sd.wait returns — covers the
     # hardware tail that the mic would otherwise capture as echo.
-    _TAIL_HOLD_S = 0.25
+    _TAIL_HOLD_S = 0.1  # Reduced from 0.25 to minimize click/pop artifacts
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -288,6 +288,12 @@ class AudioIO:
                     audio_f32 = pcm.astype(np.float32)
                 else:
                     audio_f32 = pcm.astype(np.float32) / 32768.0
+
+                # Apply short fade-out to prevent clicks/pops at the end
+                fade_samples = min(int(sample_rate * 0.01), len(audio_f32))  # 10ms fade
+                if fade_samples > 0:
+                    audio_f32[-fade_samples:] *= np.linspace(1, 0, fade_samples)
+
                 await asyncio.to_thread(self._play_array, audio_f32, sample_rate)
             finally:
                 # Defer the clear so the mic's echo-mute only arms once the

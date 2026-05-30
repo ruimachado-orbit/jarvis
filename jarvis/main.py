@@ -40,13 +40,19 @@ def _load_env_file_vars() -> None:
     this, running ``python -m jarvis voice`` directly (bypassing ``make dev``)
     leaves HF_TOKEN unset and gated repos fail with 401.
 
-    Precedence: existing os.environ wins over .env values.
+    Precedence: .env file wins for OPENAI_API_KEY (to override shell OpenRouter key),
+    otherwise existing os.environ wins.
     """
     import os
     from dotenv import dotenv_values
-    for k, v in dotenv_values(".env").items():
-        if v is not None and k not in os.environ:
-            os.environ[k] = v
+    env_vars = dotenv_values(".env")
+    for k, v in env_vars.items():
+        if v is not None:
+            # Force override OPENAI_API_KEY from .env (shell may have OpenRouter key)
+            if k == "OPENAI_API_KEY":
+                os.environ[k] = v
+            elif k not in os.environ:
+                os.environ[k] = v
 
 
 _load_env_file_vars()
@@ -232,14 +238,14 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                 cached = _pcm_cache.get(sentence)
                 if cached is not None:
                     pcm_out, sr = cached
-                    log.debug("TTS cache hit: %s", sentence[:40])
+                    log.info("TTS cache hit: %s", sentence[:40])
                 else:
-                    log.debug("TTS synthesising: %s", sentence[:40])
+                    log.info("TTS synthesising: %s", sentence[:40])
                     pcm_out, sr = await tts.synthesize(sentence)
-                log.debug("TTS playing %d samples", len(pcm_out))
+                log.info("TTS playing %d samples at %d Hz", len(pcm_out), sr)
                 _speaking.set()
                 await audio.play(pcm_out, sr)
-                log.debug("TTS done")
+                log.info("TTS playback complete")
             except Exception as e:
                 console.print(f"[red]TTS failed:[/red] {e}")
                 log.error("TTS consumer error: %s", e, exc_info=True)
@@ -468,34 +474,39 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                         total_frames = 1
                         trailing_silence = 0
 
-    bridge = TelegramBridge(settings, _respond)
-    await bridge.start()
+    # Telegram bridge disabled to avoid polling conflicts
+    # bridge = TelegramBridge(settings, _respond)
+    # await bridge.start()
 
     monitor_tasks = []
-    if toolbox._calendar:
-        from jarvis.graph.proactive.calendar import CalendarMonitor
-        cal_monitor = CalendarMonitor(
-            session["graph"], toolbox._calendar,
-            notify_fn=bridge.notify,
-            poll_seconds=settings.calendar_poll_seconds,
-        )
-        monitor_tasks.append(asyncio.create_task(cal_monitor.run_forever()))
+    # Proactive monitors disabled (depend on Telegram notify)
+    # if toolbox._calendar:
+    #     from jarvis.graph.proactive.calendar import CalendarMonitor
+    #     cal_monitor = CalendarMonitor(
+    #         session["graph"], toolbox._calendar,
+    #         notify_fn=bridge.notify,
+    #         poll_seconds=settings.calendar_poll_seconds,
+    #     )
+    #     monitor_tasks.append(asyncio.create_task(cal_monitor.run_forever()))
 
-    if toolbox._email:
-        from jarvis.graph.proactive.email import EmailMonitor
-        email_monitor = EmailMonitor(
-            session["graph"], toolbox._email,
-            notify_fn=bridge.notify,
-            poll_seconds=settings.email_poll_seconds,
-        )
-        monitor_tasks.append(asyncio.create_task(email_monitor.run_forever()))
+    # if toolbox._email:
+    #     from jarvis.graph.proactive.email import EmailMonitor
+    #     email_monitor = EmailMonitor(
+    #         session["graph"], toolbox._email,
+    #         notify_fn=bridge.notify,
+    #         poll_seconds=settings.email_poll_seconds,
+    #     )
+    #     monitor_tasks.append(asyncio.create_task(email_monitor.run_forever()))
 
     stop = asyncio.Event()
     _install_signal_handlers(stop)
 
-    sleeping = True
+    sleeping = settings.wake_enabled  # Start awake if wake word is disabled
     toggle_event = asyncio.Event()  # Signals Cmd+Shift+S press
-    console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] or press [bold]Cmd+Shift+S[/] to wake me. Ctrl-C to quit.")
+    if sleeping:
+        console.print("[bold green]Jarvis standing by.[/] Say [bold]'Hey Jarvis'[/] or press [bold]Cmd+Shift+S[/] to wake me. Ctrl-C to quit.")
+    else:
+        console.print("[bold green]Jarvis online.[/] Listening... Press [bold]Cmd+Shift+S[/] to sleep. Ctrl-C to quit.")
 
     # Keyboard shortcut handler (Cmd+J to toggle wake/sleep)
     keyboard_task = None
@@ -571,7 +582,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             pass
         for t in monitor_tasks:
             t.cancel()
-        await bridge.stop()
+        # await bridge.stop()
 
 
 # ----- chat -----

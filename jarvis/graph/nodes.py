@@ -67,73 +67,55 @@ def _build_claude_prompt(system: str, messages: list[dict]) -> str:
 _SENT_RE = re.compile(r"([.!?—])\s+")
 
 
-async def _run_claude(
+async def _run_openai(
     system: str,
     messages: list[dict],
     model: str,
     sentence_callback: "asyncio.coroutines | None" = None,
 ) -> str:
-    """Stream ``claude -p``, firing sentence_callback per sentence.
+    """Stream OpenAI API, firing sentence_callback per sentence."""
+    import os
+    from openai import AsyncOpenAI
 
-    Runs without ``--bare`` so the user's configured MCP servers, hooks,
-    plugins, agents, and CLAUDE.md discovery are all active. OAuth comes from
-    the macOS keychain via claude's default flow, so no API key is injected.
-    """
-    # Build just the conversation part (no system block) for -p
-    conv_parts = []
+    client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    # Convert to OpenAI format
+    openai_messages = [{"role": "system", "content": system}]
     for msg in messages:
-        if msg.get("role") == "system":
-            continue
+        role = msg.get("role")
         content = msg.get("content", "")
         if isinstance(content, list):
             content = " ".join(
                 b.get("text", "") for b in content
                 if isinstance(b, dict) and b.get("type") == "text"
             )
-        conv_parts.append(f"<{msg['role']}>\n{content}\n</{msg['role']}>")
-    conversation = "\n".join(conv_parts)
+        if role != "system":
+            openai_messages.append({"role": role, "content": content})
 
-    proc = await asyncio.create_subprocess_exec(
-        "claude", "-p", conversation,
-        "--model", model,
-        "--system-prompt", system,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-        # Non-interactive subprocess: no one can answer per-tool prompts,
-        # so "default" mode silently denies every MCP/tool call. The user
-        # is present and talking to Jarvis — presence is consent.
-        "--permission-mode", "bypassPermissions",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    # Map model names
+    model_map = {
+        "claude-sonnet-4-6": "gpt-4o",
+        "claude-opus-4": "gpt-4o",
+    }
+    openai_model = model_map.get(model, "gpt-4o")
 
     full_text: list[str] = []
     sentence_buf = ""
 
-    async for raw_line in proc.stdout:
-        line = raw_line.decode().strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    stream = await client.chat.completions.create(
+        model=openai_model,
+        messages=openai_messages,
+        stream=True,
+        max_tokens=1024,
+        temperature=0.2,
+    )
 
-        token_text = None
-        etype = event.get("type", "")
-        if etype == "stream_event":
-            inner = event.get("event", {})
-            if inner.get("type") == "content_block_delta":
-                delta = inner.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    token_text = delta.get("text", "")
-        elif etype == "result" and not full_text and not event.get("is_error"):
-            token_text = event.get("result", "")
-
-        if token_text:
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            token_text = chunk.choices[0].delta.content
             full_text.append(token_text)
             sentence_buf += token_text
+
             if sentence_callback:
                 while True:
                     m = _SENT_RE.search(sentence_buf)
@@ -146,11 +128,6 @@ async def _run_claude(
 
     if sentence_callback and sentence_buf.strip():
         await sentence_callback(sentence_buf.strip())
-
-    await proc.wait()
-    if proc.returncode not in (0, None):
-        err = (await proc.stderr.read()).decode().strip()
-        raise RuntimeError(f"claude --bare failed (rc={proc.returncode}): {err}")
 
     return "".join(full_text).strip()
 
@@ -192,7 +169,7 @@ async def think_node(state: AgentState) -> dict[str, Any]:
         turns += 1
         tts_callback = state.get("tts_callback")
         try:
-            response_text = await _run_claude(system, messages, model, sentence_callback=tts_callback)
+            response_text = await _run_openai(system, messages, model, sentence_callback=tts_callback)
         except Exception as e:
             log.error("LLM error: %s", e)
             return {**state, "final_response": f"Sorry, I encountered an error: {e}", "error": str(e)}

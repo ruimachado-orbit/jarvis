@@ -23,3 +23,5 @@ models/
 *.db-shm
 .vscode/
 .idea/
+
+.understand-anything/

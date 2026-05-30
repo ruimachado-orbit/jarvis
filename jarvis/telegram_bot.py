@@ -50,11 +50,14 @@ class TelegramBridge:
         self._app.add_handler(CommandHandler("ask", self._cmd_ask))
         self._app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text))
         await self._app.initialize()
-        # Close any stale polling session left by a previous process
+        # Force clear any webhook or stale polling session
         try:
-            await self._app.bot.get_updates(offset=-1, timeout=1)
-        except Exception:
-            pass
+            await self._app.bot.delete_webhook(drop_pending_updates=True)
+            log.info("telegram: cleared webhook")
+        except Exception as e:
+            log.warning("telegram: webhook clear failed: %s", e)
+        # Wait for Telegram's polling timeout to expire (up to 30s)
+        await asyncio.sleep(2)
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
         log.info("telegram bridge started")

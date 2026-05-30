@@ -289,10 +289,14 @@ class AudioIO:
                 else:
                     audio_f32 = pcm.astype(np.float32) / 32768.0
 
-                # Apply short fade-out to prevent clicks/pops at the end
-                fade_samples = min(int(sample_rate * 0.01), len(audio_f32))  # 10ms fade
-                if fade_samples > 0:
-                    audio_f32[-fade_samples:] *= np.linspace(1, 0, fade_samples)
+                # Apply fade-in/out to prevent clicks/pops
+                fade_in_samples = min(int(sample_rate * 0.005), len(audio_f32))  # 5ms fade-in
+                fade_out_samples = min(int(sample_rate * 0.02), len(audio_f32))  # 20ms fade-out
+
+                if fade_in_samples > 0:
+                    audio_f32[:fade_in_samples] *= np.linspace(0, 1, fade_in_samples)
+                if fade_out_samples > 0:
+                    audio_f32[-fade_out_samples:] *= np.linspace(1, 0, fade_out_samples)
 
                 await asyncio.to_thread(self._play_array, audio_f32, sample_rate)
             finally:

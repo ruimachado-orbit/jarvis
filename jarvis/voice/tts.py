@@ -190,12 +190,11 @@ class TTS:
 
     def _synthesize_kokoro(self, text: str, detected_lang: str = None) -> tuple[np.ndarray, int]:
         kokoro = _load_kokoro()
-        voice = self._voice if self._voice and not self._voice.isdigit() else "af_heart"
 
         # Map detected language to Kokoro language codes
         # Kokoro supports: en-us, en-gb, es, fr, it, de, pt-br, ja, zh
         lang_map = {
-            "pt": "pt-br",  # Portuguese
+            "pt": "pt-br",  # Portuguese (Brazilian accent, closest to Portugal available)
             "es": "es",     # Spanish
             "fr": "fr",     # French
             "de": "de",     # German
@@ -210,8 +209,25 @@ class TTS:
             lang_to_use = "en"  # Default to English if auto
         tts_lang = lang_map.get(lang_to_use, "en-gb")
 
-        samples, sr = kokoro.create(text, voice=voice, speed=self._speed, lang=tts_lang)
-        return samples.astype(np.float32), sr
+        # Auto-select voice based on language
+        # For Portuguese: use softer voices that sound better in pt-br
+        if tts_lang == "pt-br":
+            voice = "af_sarah"  # Female voice works better for Portuguese
+        else:
+            voice = self._voice if self._voice and not self._voice.isdigit() else "bm_george"
+
+        # Adjust speed slightly for Portuguese to sound more natural
+        speed = self._speed * 0.95 if tts_lang == "pt-br" else self._speed
+
+        samples, sr = kokoro.create(text, voice=voice, speed=speed, lang=tts_lang)
+
+        # Normalize and ensure no clipping (prevents clicks)
+        audio_f32 = samples.astype(np.float32)
+        max_val = np.abs(audio_f32).max()
+        if max_val > 0:
+            audio_f32 = audio_f32 / max_val * 0.95  # Scale to 95% to prevent clipping
+
+        return audio_f32, sr
 
     def _synthesize_csm(self, text: str) -> tuple[np.ndarray, int]:
         import torch

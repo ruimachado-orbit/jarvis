@@ -20,8 +20,12 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1024
     llm_timeout: float = 120.0
 
-    # Voice (Voxtral unified STT+TTS)
+    # STT (Voxtral real-time)
     stt_language: str = "en"
+
+    # TTS (CSM / Kokoro)
+    tts_engine: str = "csm"
+    tts_voice: str = "0"
     tts_speed: float = 1.0
     tts_max_audio_ms: int = 15000
 

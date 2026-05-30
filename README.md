@@ -6,19 +6,20 @@ Everything runs locally by default:
 
 - **LLM**: Claude API via `claude` CLI (OAuth-based, no ANTHROPIC_API_KEY needed).
 - **Wake word**: [openWakeWord](https://github.com/dscripka/openWakeWord) running the `hey_jarvis` model (falls back to STT keyword match if not installed).
-- **Voice**: [Mistral Voxtral-Mini-4B-Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) — unified STT+TTS with 4B parameters, optimized for real-time speech-to-speech. Runs on Apple Silicon (MPS) or CUDA.
+- **STT**: [Mistral Voxtral-Mini-4B-Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) — real-time speech transcription with <500ms latency. 4B parameters, 13 languages, optimized for on-device. Runs on Apple Silicon (MPS) or CUDA.
+- **TTS**: [Sesame CSM 1B](https://huggingface.co/sesame/csm-1b) (preferred) or [Kokoro ONNX](https://github.com/thewh1teagle/kokoro-onnx) (fallback) — natural conversational speech synthesis.
 - **Messaging**: `python-telegram-bot` for pushing warnings and accepting remote prompts.
 - **Watch**: [watchfiles](https://github.com/samuelcolvin/watchfiles) turns any path into a Telegram notification source.
 
 ```
         ┌── wake word ──┐
-mic ────┤               ├── Voxtral STT ── Agent ──► Claude API
-        └── VAD record ─┘                   │
-                                            ├── read_file / grep / list_dir / write_file / run_shell
-                                            │
-                                            ├─► Voxtral TTS (sentence-pipelined) ─► speakers
-                                            │
-                                            └─► Telegram  (notify + remote chat + watch)
+mic ────┤               ├── Voxtral STT (<500ms) ── Agent ──► Claude API
+        └── VAD record ─┘                            │
+                                                     ├── read_file / grep / list_dir / write_file / run_shell
+                                                     │
+                                                     ├─► CSM 1B / Kokoro TTS (sentence-pipelined) ─► speakers
+                                                     │
+                                                     └─► Telegram  (notify + remote chat + watch)
 ```
 
 ## Quick start
@@ -52,8 +53,9 @@ jarvis ask "what does main.py do?" --json
 jarvis watch ./src --command "pytest -q"
 ```
 
-## Voice setup (Voxtral)
+## Voice setup
 
+### STT (Voxtral)
 Voxtral-Mini-4B-Realtime requires Hugging Face access:
 
 1. Create a Hugging Face account and token at https://huggingface.co/settings/tokens
@@ -62,10 +64,13 @@ Voxtral-Mini-4B-Realtime requires Hugging Face access:
 
 First run downloads ~8GB of model weights. Subsequent runs load from cache (~/.cache/huggingface).
 
+### TTS (CSM / Kokoro)
+CSM 1B is the default TTS engine (requires the same HF_TOKEN). Set `JARVIS_TTS_ENGINE=kokoro` to use the fallback.
+
 **Hardware requirements:**
 - **Apple Silicon (MPS)**: M1/M2/M3 with 16GB+ unified memory (recommended)
 - **CUDA**: RTX 3060 12GB or better
-- **CPU**: Works but slow (~5-10s synthesis latency)
+- **CPU**: Works but slow (~2-5s STT, ~5-10s TTS)
 
 ## Telegram
 

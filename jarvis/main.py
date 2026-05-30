@@ -93,7 +93,8 @@ def voice(
 
 async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     from jarvis.voice.audio import AudioIO
-    from jarvis.voice.voxtral import VoxtralEngine
+    from jarvis.voice.stt import STT
+    from jarvis.voice.tts import TTS
     from jarvis.voice.wake import WakeWord
     from jarvis.telegram_bot import TelegramBridge
     from jarvis.graph.nodes import _build_claude_prompt, _build_system_with_memories, TOOL_CALL_RE
@@ -109,7 +110,8 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     inject_google(session)
     toolbox = session["toolbox"]
 
-    voxtral = VoxtralEngine(settings)
+    stt = STT(settings)
+    tts = TTS(settings)
     audio = AudioIO(settings)
 
     # --- wake/sleep phrases ---
@@ -158,9 +160,9 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     # Pre-synth fixed phrases so the first ack/wake/sleep plays instantly.
     # Disk-cached across runs for zero-latency playback.
     _prewarm_list = [*ACKNOWLEDGEMENTS, *FILLERS, WAKE_RESPONSE, SLEEP_RESPONSE]
-    log.info("pre-warming Voxtral TTS cache (%d phrases)...", len(_prewarm_list))
-    _pcm_cache: dict[str, tuple[np.ndarray, int]] = await voxtral.prewarm(_prewarm_list)
-    log.info("Voxtral TTS ready (%d phrases cached)", len(_pcm_cache))
+    log.info("pre-warming TTS cache (%d phrases)...", len(_prewarm_list))
+    _pcm_cache: dict[str, tuple[np.ndarray, int]] = await tts.prewarm(_prewarm_list)
+    log.info("TTS ready (%d phrases cached)", len(_pcm_cache))
 
     async def _ask_claude(user_text: str, sentence_cb=None) -> str:
         from jarvis.graph.agent import run_turn
@@ -197,7 +199,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                     log.debug("TTS cache hit: %s", sentence[:40])
                 else:
                     log.debug("TTS synthesising: %s", sentence[:40])
-                    pcm_out, sr = await voxtral.synthesize(sentence)
+                    pcm_out, sr = await tts.synthesize(sentence)
                 log.debug("TTS playing %d samples", len(pcm_out))
                 _speaking.set()
                 await audio.play(pcm_out, sr)
@@ -218,7 +220,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                 log.debug("speak_direct cache hit: %s", text[:40])
             else:
                 log.debug("speak_direct: %s", text[:40])
-                pcm_out, sr = await voxtral.synthesize(text)
+                pcm_out, sr = await tts.synthesize(text)
             _speaking.set()
             await audio.play(pcm_out, sr)
             log.debug("speak_direct done")
@@ -466,7 +468,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             if pcm.size == 0:
                 continue
 
-            text = await voxtral.transcribe(pcm, settings.sample_rate)
+            text = await stt.transcribe(pcm, settings.sample_rate)
             if not text:
                 continue
 

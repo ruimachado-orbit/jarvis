@@ -19,7 +19,7 @@ def test_sentence_splitter_handles_paragraph_breaks():
     assert sp.flush() == "Second thought"
 
 
-class _FakeVoxtral:
+class _FakeTTS:
     async def synthesize(self, text):
         return (f"pcm:{text}", 24000)
 
@@ -40,7 +40,7 @@ async def _sentences():
 @pytest.mark.asyncio
 async def test_speak_stream_plays_in_order():
     audio = _FakeAudio()
-    await speak_stream(_sentences(), _FakeVoxtral(), audio)
+    await speak_stream(_sentences(), _FakeTTS(), audio)
     assert audio.played == [
         ("pcm:One.", 24000),
         ("pcm:Two.", 24000),

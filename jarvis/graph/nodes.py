@@ -72,6 +72,7 @@ async def _run_openrouter(
     messages: list[dict],
     model: str,
     sentence_callback: "asyncio.coroutines | None" = None,
+    detected_language: str = "en",
 ) -> str:
     """Stream OpenRouter with Groq models (ultra-fast inference), firing sentence_callback per sentence."""
     import os
@@ -85,13 +86,12 @@ async def _run_openrouter(
 
     # Convert to OpenRouter format with ultra-brief system prompt
     # Add language instruction based on detected language
-    detected_lang = state.get("detected_language", "en")
     language_hint = ""
 
-    if detected_lang == "pt":
+    if detected_language == "pt":
         language_hint = "\n\nRESPOND IN PORTUGUESE (Portugal). Mantenha respostas em 1-2 frases curtas no máximo."
-    elif detected_lang != "en":
-        language_hint = f"\n\nRESPOND IN THE USER'S LANGUAGE ({detected_lang}). Keep responses to 1-2 short sentences maximum."
+    elif detected_language != "en":
+        language_hint = f"\n\nRESPOND IN THE USER'S LANGUAGE ({detected_language}). Keep responses to 1-2 short sentences maximum."
     else:
         language_hint = "\n\nIMPORTANT: Keep responses to 1-2 short sentences maximum. Be conversational and concise like a real person."
 
@@ -291,9 +291,10 @@ async def think_node(state: AgentState) -> dict[str, Any]:
     while turns < MAX_TURNS:
         turns += 1
         tts_callback = state.get("tts_callback")
+        detected_lang = state.get("detected_language", "en")
         try:
             # Use OpenRouter with Groq models for ultra-fast inference (50-150ms first token)
-            response_text = await _run_openrouter(system, messages, model, sentence_callback=tts_callback)
+            response_text = await _run_openrouter(system, messages, model, sentence_callback=tts_callback, detected_language=detected_lang)
         except Exception as e:
             log.error("LLM error: %s", e)
             return {**state, "final_response": f"Sorry, I encountered an error: {e}", "error": str(e)}

@@ -4,30 +4,29 @@ A voice-first local coding assistant. You say "hey Jarvis", it reads your codeba
 
 Everything runs locally by default:
 
-- **LLM**: any model served through [vLLM](https://github.com/vllm-project/vllm) over the OpenAI-compatible API. Default is `Qwen/Qwen2.5-Coder-7B-Instruct`; drop to `Qwen2.5-Coder-1.5B-Instruct` for 6 GB GPUs.
+- **LLM**: Claude API via `claude` CLI (OAuth-based, no ANTHROPIC_API_KEY needed).
 - **Wake word**: [openWakeWord](https://github.com/dscripka/openWakeWord) running the `hey_jarvis` model (falls back to STT keyword match if not installed).
-- **STT**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper), VAD-gated recording via `webrtcvad`.
-- **TTS**: [Piper](https://github.com/rhasspy/piper), sentence-level synthesis pipelined with playback so the first words come back fast.
+- **Voice**: [Mistral Voxtral-Mini-4B-Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) — unified STT+TTS with 4B parameters, optimized for real-time speech-to-speech. Runs on Apple Silicon (MPS) or CUDA.
 - **Messaging**: `python-telegram-bot` for pushing warnings and accepting remote prompts.
 - **Watch**: [watchfiles](https://github.com/samuelcolvin/watchfiles) turns any path into a Telegram notification source.
 
 ```
         ┌── wake word ──┐
-mic ────┤               ├── faster-whisper ── Agent ──► vLLM (Qwen2.5-Coder)
-        └── VAD record ─┘                       │
-                                                ├── read_file / grep / list_dir / write_file / run_shell
-                                                │
-                                                ├─► Piper (sentence-pipelined) ─► speakers
-                                                │
-                                                └─► Telegram  (notify + remote chat + watch)
+mic ────┤               ├── Voxtral STT ── Agent ──► Claude API
+        └── VAD record ─┘                   │
+                                            ├── read_file / grep / list_dir / write_file / run_shell
+                                            │
+                                            ├─► Voxtral TTS (sentence-pipelined) ─► speakers
+                                            │
+                                            └─► Telegram  (notify + remote chat + watch)
 ```
 
 ## Quick start
 
 ```bash
-make init        # venv + deps + .env + Piper voice
-# edit .env (Telegram token, workspace, etc)
-make dev         # spins up vLLM and the voice loop together
+make init        # venv + deps + .env
+# edit .env (add HF_TOKEN for Voxtral access, Telegram token, workspace, etc)
+make voice       # start the voice loop
 ```
 
 Say **"hey Jarvis"**, ask your question, and it streams the answer back.
@@ -36,9 +35,7 @@ Say **"hey Jarvis"**, ask your question, and it streams the answer back.
 
 | Command                 | What it does                                                  |
 | ----------------------- | ------------------------------------------------------------- |
-| `make dev`              | Start vLLM, wait for it, then run the voice loop.             |
-| `make vllm`             | Start vLLM only (uses `scripts/serve_vllm.sh`).               |
-| `make voice`            | Run the hands-free voice loop (assumes vLLM is up).           |
+| `make voice`            | Run the hands-free voice loop.                                |
 | `make chat`             | Streaming text REPL, no mic needed.                           |
 | `make ask Q="..."`      | One-shot text query, prints the answer and exits.             |
 | `make telegram`         | Only the Telegram bridge (no local mic).                      |
@@ -55,19 +52,20 @@ jarvis ask "what does main.py do?" --json
 jarvis watch ./src --command "pytest -q"
 ```
 
-## vLLM serving
+## Voice setup (Voxtral)
 
-Defaults live in `scripts/serve_vllm.sh`. Tune for your VRAM via env vars:
+Voxtral-Mini-4B-Realtime requires Hugging Face access:
 
-```bash
-JARVIS_LLM_MODEL=Qwen/Qwen2.5-Coder-1.5B-Instruct \
-JARVIS_VLLM_MAX_LEN=6000 \
-JARVIS_VLLM_GPU_UTIL=0.8 \
-JARVIS_VLLM_ENFORCE_EAGER=true \
-./scripts/serve_vllm.sh
-```
+1. Create a Hugging Face account and token at https://huggingface.co/settings/tokens
+2. Request access to `mistralai/Voxtral-Mini-4B-Realtime-2602` (may require approval)
+3. Add your token to `.env`: `HF_TOKEN=hf_...`
 
-Quick decision rule: if model weights take more than 50 % of free GPU memory, set `JARVIS_VLLM_ENFORCE_EAGER=true` (no CUDA graphs, ~1.5 GB more for the KV cache).
+First run downloads ~8GB of model weights. Subsequent runs load from cache (~/.cache/huggingface).
+
+**Hardware requirements:**
+- **Apple Silicon (MPS)**: M1/M2/M3 with 16GB+ unified memory (recommended)
+- **CUDA**: RTX 3060 12GB or better
+- **CPU**: Works but slow (~5-10s synthesis latency)
 
 ## Telegram
 

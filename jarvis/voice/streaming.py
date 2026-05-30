@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from jarvis.voice.audio import AudioIO
-    from jarvis.voice.tts import TTS
+    from jarvis.voice.voxtral import VoxtralEngine
 
 _SENT_BOUNDARY = re.compile(r"(?<=[\.\!\?])\s+(?=[A-Z0-9\"'\(\[])|\n\n+")
 
@@ -70,7 +70,7 @@ class SentenceSplitter:
 
 async def speak_stream(
     sentences: AsyncIterator[str],
-    tts: TTS,
+    voxtral: VoxtralEngine,
     audio: AudioIO,
     max_pending: int = 3,
 ) -> None:
@@ -86,7 +86,7 @@ async def speak_stream(
     async def producer() -> None:
         try:
             async for sentence in sentences:
-                clip = await tts.synthesize(sentence)
+                clip = await voxtral.synthesize(sentence)
                 await queue.put(clip)
         finally:
             await queue.put(STOP)

@@ -21,13 +21,15 @@ dependencies = [
     # Web tools
     "trafilatura>=1.12.0",
     "duckduckgo-search>=6.0.0",
-    # Voice
-    "faster-whisper>=1.0.3",
-    "kokoro-onnx>=0.4.0",
+    # Voice (Voxtral unified STT+TTS)
+    "transformers>=4.48.0",
+    "torch>=2.5.0",
+    "torchaudio>=2.5.0",
     "sounddevice>=0.4.7",
     "soundfile>=0.12.0",
     "numpy>=1.26.0",
     "webrtcvad>=2.0.10",
+    "accelerate>=0.34.0",
     # Telegram + CLI
     "python-telegram-bot>=21.4",
     "typer>=0.12.3",

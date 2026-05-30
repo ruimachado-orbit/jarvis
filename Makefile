@@ -1,11 +1,11 @@
-.PHONY: init dev voice chat ask telegram watch notify test auth-google memory-show memory-reset csm-install ensure-venv kill-zombies
+.PHONY: init voice chat ask telegram watch notify test auth-google memory-show memory-reset ensure-venv kill-zombies
 
 init:
 	@PY=python3; command -v $$PY >/dev/null 2>&1 || PY=python; \
 	$$PY -m venv .venv && \
 	.venv/bin/pip install -e '.[dev,wake]'
 	cp -n .env.example .env || true
-	@echo "Edit .env and set ANTHROPIC_API_KEY, then run: make auth-google"
+	@echo "Edit .env and set HF_TOKEN for Voxtral access, then run: make auth-google"
 
 # Create .venv and install deps when missing (same as init, without clobbering .env).
 ensure-venv:
@@ -26,18 +26,6 @@ load_hf_token = if [ -z "$$HF_TOKEN" ] && [ -f .env ]; then \
 	export HF_TOKEN; \
 	fi
 
-# CSM 1B via transformers' native CsmForConditionalGeneration — no vendored
-# repo files required.
-csm-install: ensure-venv
-	@echo "Installing CSM 1B TTS (Sesame)..."
-	@$(load_hf_token); \
-	if [ -z "$$HF_TOKEN" ]; then \
-		echo "Set HF_TOKEN in .env or export HF_TOKEN=hf_..."; \
-		exit 1; \
-	fi
-	.venv/bin/pip install torch torchaudio 'transformers>=4.52.1'
-	@echo "CSM deps installed. Run: huggingface-cli login && make dev"
-
 # Stopped (Ctrl-Z'd) jarvis voice processes hold the macOS mic + speaker
 # handles and silently break the next session. Force-kill before each dev run.
 kill-zombies:
@@ -47,21 +35,14 @@ kill-zombies:
 		sleep 0.3; \
 	fi
 
-dev: ensure-venv kill-zombies
+voice: ensure-venv kill-zombies
 	@$(load_hf_token); \
-	if ! .venv/bin/python -c "import torch, torchaudio; from transformers import CsmForConditionalGeneration" >/dev/null 2>&1; then \
-		echo "CSM not installed. Running make csm-install first..."; \
-		$(MAKE) csm-install; \
-	fi; \
 	if [ -z "$$HF_TOKEN" ]; then \
-		echo "Set HF_TOKEN in .env (or export it) to download CSM model weights."; \
-		echo "Then run: huggingface-cli login && make dev"; \
+		echo "Set HF_TOKEN in .env (or export it) to download Voxtral model weights."; \
+		echo "Get a token at: https://huggingface.co/settings/tokens"; \
 		exit 1; \
 	fi; \
 	.venv/bin/python -m jarvis voice
-
-voice:
-	jarvis voice
 
 chat:
 	jarvis chat

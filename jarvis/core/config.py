@@ -20,15 +20,8 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 1024
     llm_timeout: float = 120.0
 
-    # STT
-    stt_model: str = "base.en"
-    stt_device: str = "auto"
-    stt_compute_type: str = "int8"
+    # Voice (Voxtral unified STT+TTS)
     stt_language: str = "en"
-
-    # TTS
-    tts_engine: str = "csm"
-    tts_voice: str = "af_heart"
     tts_speed: float = 1.0
     tts_max_audio_ms: int = 15000
 

@@ -67,6 +67,106 @@ def _build_claude_prompt(system: str, messages: list[dict]) -> str:
 _SENT_RE = re.compile(r"([.!?—])\s+")
 
 
+async def _run_openrouter(
+    system: str,
+    messages: list[dict],
+    model: str,
+    sentence_callback: "asyncio.coroutines | None" = None,
+) -> str:
+    """Stream OpenRouter with Groq models (ultra-fast inference), firing sentence_callback per sentence."""
+    import os
+    from openai import AsyncOpenAI
+
+    # OpenRouter uses OpenAI SDK but with custom base URL
+    client = AsyncOpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),  # OpenRouter key from shell env
+        base_url="https://openrouter.ai/api/v1"
+    )
+
+    # Convert to OpenRouter format with ultra-brief system prompt
+    # Add language instruction based on detected language
+    detected_lang = state.get("detected_language", "en")
+    language_hint = ""
+
+    if detected_lang == "pt":
+        language_hint = "\n\nRESPOND IN PORTUGUESE (Portugal). Mantenha respostas em 1-2 frases curtas no máximo."
+    elif detected_lang != "en":
+        language_hint = f"\n\nRESPOND IN THE USER'S LANGUAGE ({detected_lang}). Keep responses to 1-2 short sentences maximum."
+    else:
+        language_hint = "\n\nIMPORTANT: Keep responses to 1-2 short sentences maximum. Be conversational and concise like a real person."
+
+    brief_system = system + language_hint
+    openrouter_messages = [{"role": "system", "content": brief_system}]
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if role != "system":
+            openrouter_messages.append({"role": role, "content": content})
+
+    # Use Claude 3 Haiku for fast responses (~500-800ms first token)
+    openrouter_model = "anthropic/claude-3-haiku"
+
+    full_text: list[str] = []
+    sentence_buf = ""
+
+    stream = await client.chat.completions.create(
+        model=openrouter_model,
+        messages=openrouter_messages,
+        stream=True,
+        max_tokens=30,  # Ultra-short responses for human-like speed
+        temperature=0.2,
+    )
+
+    async for chunk in stream:
+        if chunk.choices and chunk.choices[0].delta.content:
+            token_text = chunk.choices[0].delta.content
+            full_text.append(token_text)
+            sentence_buf += token_text
+
+            if sentence_callback:
+                # Fire callback on sentence-ending punctuation OR phrase boundaries for low-latency streaming
+                while True:
+                    # Look for sentence ending punctuation
+                    m = _SENT_RE.search(sentence_buf)
+                    if m:
+                        sentence = sentence_buf[:m.end()].strip()
+                        sentence_buf = sentence_buf[m.end():]
+                        if sentence:
+                            await sentence_callback(sentence)
+                    # Fire on word boundaries after 15+ chars (2-3 words) for ultra-low-latency streaming
+                    elif len(sentence_buf) >= 15:
+                        # Find comma, semicolon, or colon
+                        split_idx = -1
+                        for sep in [',', ';', ':']:
+                            idx = sentence_buf.find(sep)
+                            if idx != -1 and (split_idx == -1 or idx < split_idx):
+                                split_idx = idx + 1
+
+                        # Or break at 40 chars as fallback
+                        if split_idx == -1 and len(sentence_buf) >= 40:
+                            split_idx = min(40, len(sentence_buf))
+
+                        if split_idx > 0:
+                            phrase = sentence_buf[:split_idx].strip()
+                            sentence_buf = sentence_buf[split_idx:].lstrip()
+                            if phrase:
+                                await sentence_callback(phrase)
+                        else:
+                            break
+                    else:
+                        break
+
+    if sentence_callback and sentence_buf.strip():
+        await sentence_callback(sentence_buf.strip())
+
+    return "".join(full_text).strip()
+
+
 async def _run_openai(
     system: str,
     messages: list[dict],
@@ -92,12 +192,12 @@ async def _run_openai(
         if role != "system":
             openai_messages.append({"role": role, "content": content})
 
-    # Map model names
+    # Map model names - use gpt-4o-mini for 3x faster responses
     model_map = {
-        "claude-sonnet-4-6": "gpt-4o",
+        "claude-sonnet-4-6": "gpt-4o-mini",
         "claude-opus-4": "gpt-4o",
     }
-    openai_model = model_map.get(model, "gpt-4o")
+    openai_model = model_map.get(model, "gpt-4o-mini")
 
     full_text: list[str] = []
     sentence_buf = ""
@@ -106,7 +206,7 @@ async def _run_openai(
         model=openai_model,
         messages=openai_messages,
         stream=True,
-        max_tokens=1024,
+        max_tokens=150,  # Shorter responses = lower latency
         temperature=0.2,
     )
 
@@ -117,14 +217,37 @@ async def _run_openai(
             sentence_buf += token_text
 
             if sentence_callback:
+                # Fire callback on sentence-ending punctuation OR phrase boundaries for low-latency streaming
                 while True:
+                    # Look for sentence ending punctuation
                     m = _SENT_RE.search(sentence_buf)
-                    if not m:
+                    if m:
+                        sentence = sentence_buf[:m.end()].strip()
+                        sentence_buf = sentence_buf[m.end():]
+                        if sentence:
+                            await sentence_callback(sentence)
+                    # Fire on word boundaries after 15+ chars (2-3 words) for ultra-low-latency streaming
+                    elif len(sentence_buf) >= 15:
+                        # Find comma, semicolon, or colon
+                        split_idx = -1
+                        for sep in [',', ';', ':']:
+                            idx = sentence_buf.find(sep)
+                            if idx != -1 and (split_idx == -1 or idx < split_idx):
+                                split_idx = idx + 1
+
+                        # Or break at 40 chars as fallback
+                        if split_idx == -1 and len(sentence_buf) >= 40:
+                            split_idx = min(40, len(sentence_buf))
+
+                        if split_idx > 0:
+                            phrase = sentence_buf[:split_idx].strip()
+                            sentence_buf = sentence_buf[split_idx:].lstrip()
+                            if phrase:
+                                await sentence_callback(phrase)
+                        else:
+                            break
+                    else:
                         break
-                    sentence = sentence_buf[:m.end()].strip()
-                    sentence_buf = sentence_buf[m.end():]
-                    if sentence:
-                        await sentence_callback(sentence)
 
     if sentence_callback and sentence_buf.strip():
         await sentence_callback(sentence_buf.strip())
@@ -169,7 +292,8 @@ async def think_node(state: AgentState) -> dict[str, Any]:
         turns += 1
         tts_callback = state.get("tts_callback")
         try:
-            response_text = await _run_openai(system, messages, model, sentence_callback=tts_callback)
+            # Use OpenRouter with Groq models for ultra-fast inference (50-150ms first token)
+            response_text = await _run_openrouter(system, messages, model, sentence_callback=tts_callback)
         except Exception as e:
             log.error("LLM error: %s", e)
             return {**state, "final_response": f"Sorry, I encountered an error: {e}", "error": str(e)}

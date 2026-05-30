@@ -21,3 +21,4 @@ class AgentState(TypedDict, total=False):
     settings: Any                    # Settings object passed through state
     toolbox: Any                     # Toolbox object passed through state
     tts_callback: Any                # async callable(sentence: str) for streaming TTS
+    detected_language: str           # Auto-detected language from STT (en, pt, etc.)

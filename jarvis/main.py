@@ -138,9 +138,11 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     from jarvis.voice.stt import STT
     from jarvis.voice.tts import TTS
     from jarvis.voice.wake import WakeWord
+    from jarvis.voice.timing import measure, reset_timings, log_summary
     from jarvis.telegram_bot import TelegramBridge
     from jarvis.graph.nodes import _build_claude_prompt, _build_system_with_memories, TOOL_CALL_RE
     import json, re
+    import time
 
     settings = get_settings()
     if stream is not None:
@@ -173,46 +175,24 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     SENT_RE = re.compile(r"([.!?])\s+")
     conversation_history: list[dict] = []
 
-    # Spoken-aloud acknowledgement fired as soon as Jarvis receives a request,
-    # while the LLM is still generating — keeps the user feeling heard.
-    ACKNOWLEDGEMENTS = [
-        "Right away, Sir.",
-        "Let me check that for you, Sir.",
-        "One moment, Sir.",
-        "On it, Sir.",
-        "Looking into it, Sir.",
-        "Working on it, Sir.",
-        "Certainly, Sir.",
-        "At once, Sir.",
-    ]
-    WAKE_RESPONSE = "At your service, Sir. How may I be of assistance?"
-    SLEEP_RESPONSE = "Very good, Sir. Powering down. Do call if you need me."
+    # Wake/sleep responses only
+    WAKE_RESPONSE = "Online."
+    SLEEP_RESPONSE = "Standby mode."
 
-    # Periodic filler phrases fired during long tool-calling turns so the
-    # user keeps hearing signs of life while Claude runs email/calendar ops.
-    FILLERS = [
-        "Still working on it, Sir.",
-        "One moment more, Sir.",
-        "Almost there, Sir.",
-        "Bear with me, Sir.",
-        "Just a bit longer, Sir.",
-        "Nearly done, Sir.",
-    ]
-
-    # Pre-synth fixed phrases so the first ack/wake/sleep plays instantly.
-    # Disk-cached across runs for zero-latency playback.
-    _prewarm_list = [*ACKNOWLEDGEMENTS, *FILLERS, WAKE_RESPONSE, SLEEP_RESPONSE]
+    # Pre-synth wake/sleep phrases for instant playback
+    _prewarm_list = [WAKE_RESPONSE, SLEEP_RESPONSE]
     log.info("pre-warming TTS cache (%d phrases)...", len(_prewarm_list))
     _pcm_cache: dict[str, tuple[np.ndarray, int]] = await tts.prewarm(_prewarm_list)
     log.info("TTS ready (%d phrases cached)", len(_pcm_cache))
 
-    async def _ask_claude(user_text: str, sentence_cb=None) -> str:
+    async def _ask_claude(user_text: str, sentence_cb=None, detected_lang: str = "en") -> str:
         from jarvis.graph.agent import run_turn
         response, updated = await run_turn(
             session["graph"], user_text,
             trigger="voice", output_channel="voice",
             conversation_history=conversation_history,
             tts_callback=sentence_cb,
+            detected_language=detected_lang,
         )
         conversation_history.clear()
         conversation_history.extend(updated)
@@ -226,25 +206,57 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
     _captured: asyncio.Queue[np.ndarray] = asyncio.Queue()
 
     async def _tts_consumer() -> None:
+        """TTS consumer with parallel synthesis - synthesize next chunk while playing current."""
+        pending_synth = None
+
         while True:
             sentence = await _tts_queue.get()
             if sentence is None:
                 _tts_queue.task_done()
+                if pending_synth:
+                    pending_synth.cancel()
                 break
             if _interrupt.is_set():
                 _tts_queue.task_done()
+                if pending_synth:
+                    pending_synth.cancel()
+                    pending_synth = None
                 continue
             try:
-                cached = _pcm_cache.get(sentence)
-                if cached is not None:
-                    pcm_out, sr = cached
-                    log.info("TTS cache hit: %s", sentence[:40])
+                # Use pre-synthesized audio if available
+                if pending_synth:
+                    pcm_out, sr = await pending_synth
+                    pending_synth = None
                 else:
-                    log.info("TTS synthesising: %s", sentence[:40])
-                    pcm_out, sr = await tts.synthesize(sentence)
+                    cached = _pcm_cache.get(sentence)
+                    if cached is not None:
+                        pcm_out, sr = cached
+                        log.info("TTS cache hit: %s", sentence[:40])
+                    else:
+                        synth_start = time.perf_counter()
+                        log.info("TTS synthesising: %s", sentence[:40])
+                        pcm_out, sr = await tts.synthesize(sentence)
+                        synth_ms = (time.perf_counter() - synth_start) * 1000
+                        log.info(f"⏱️  2b_TTS_synth: {synth_ms:.0f}ms")
+
+                # Start synthesizing next chunk in parallel while playing current
+                try:
+                    next_sentence = _tts_queue.get_nowait()
+                    if next_sentence is not None:
+                        next_cached = _pcm_cache.get(next_sentence)
+                        if not next_cached:
+                            # Start synthesis in background
+                            pending_synth = asyncio.create_task(tts.synthesize(next_sentence))
+                        _tts_queue.task_done()
+                except asyncio.QueueEmpty:
+                    pass
+
+                play_start = time.perf_counter()
                 log.info("TTS playing %d samples at %d Hz", len(pcm_out), sr)
                 _speaking.set()
                 await audio.play(pcm_out, sr)
+                play_ms = (time.perf_counter() - play_start) * 1000
+                log.info(f"⏱️  2c_TTS_play: {play_ms:.0f}ms")
                 log.info("TTS playback complete")
             except Exception as e:
                 console.print(f"[red]TTS failed:[/red] {e}")
@@ -280,79 +292,36 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             except asyncio.QueueEmpty:
                 break
 
-    async def _stream_and_speak(text: str) -> str:
+    async def _stream_and_speak(text: str, turn_start_time: float, detected_lang: str = "en") -> str:
         _interrupt.clear()
         _drain_tts_queue()
         consumer = asyncio.create_task(_tts_consumer())
 
-        loop = asyncio.get_running_loop()
-        last_put = loop.time()
+        first_chunk_spoken = [False]  # Mutable flag for timing
 
         async def _put(item: str) -> None:
-            nonlocal last_put
-            last_put = loop.time()
             await _tts_queue.put(item)
 
-        # Queue an acknowledgement first so it plays while claude is thinking —
-        # the consumer serialises playback, so the LLM's first sentence lands
-        # right after the ack finishes.
-        ack = random.choice(ACKNOWLEDGEMENTS)
-        console.print(f"[dim](ack)[/dim] {ack}")
-        await _put(ack)
-
-        # Filler ticker: drop a short "still working" phrase every ~5 s of
-        # queue silence while the LLM+tools run, so slow email/calendar turns
-        # don't leave the user hearing dead air. Stops when claude returns.
-        claude_done = asyncio.Event()
-
-        # Shuffled queue so each cycle uses every phrase once before repeating,
-        # and the cycle boundary doesn't accidentally repeat the previous filler.
-        filler_queue: list[str] = []
-        last_filler: str | None = None
-
-        def _next_filler() -> str:
-            nonlocal last_filler
-            if not filler_queue:
-                candidates = random.sample(FILLERS, len(FILLERS))
-                if last_filler and candidates[0] == last_filler and len(candidates) > 1:
-                    candidates[0], candidates[1] = candidates[1], candidates[0]
-                filler_queue.extend(candidates)
-            f = filler_queue.pop(0)
-            last_filler = f
-            return f
-
-        async def _filler_ticker() -> None:
-            while not claude_done.is_set():
-                try:
-                    await asyncio.wait_for(claude_done.wait(), timeout=1.0)
-                    return
-                except asyncio.TimeoutError:
-                    pass
-                if _interrupt.is_set():
-                    return
-                if loop.time() - last_put >= 5.0:
-                    filler = _next_filler()
-                    log.debug("filler: %s", filler)
-                    await _put(filler)
-
-        ticker = asyncio.create_task(_filler_ticker())
+        # No acknowledgements or fillers — only inference-based responses
 
         async def _on_sentence(s: str) -> None:
             if not _interrupt.is_set():
+                if not first_chunk_spoken[0]:
+                    first_chunk_spoken[0] = True
+                    log.info("⏱️  3_time_to_first_audio: {:.0f}ms".format(
+                        (time.perf_counter() - turn_start_time) * 1000
+                    ))
                 await _put(s)
 
-        try:
-            reply = await _ask_claude(text, sentence_cb=_on_sentence)
-        finally:
-            claude_done.set()
-            await ticker
+        with measure("2a_LLM_inference"):
+            reply = await _ask_claude(text, sentence_cb=_on_sentence, detected_lang=detected_lang)
 
         await _tts_queue.put(None)
         await consumer
         return reply
 
-    async def _respond(text: str) -> str:
-        return await _stream_and_speak(text)
+    async def _respond(text: str, turn_start_time: float, detected_lang: str = "en") -> str:
+        return await _stream_and_speak(text, turn_start_time, detected_lang)
 
     async def _mic_loop(stop_event: asyncio.Event) -> None:
         """Single mic owner. Handles both normal recording and interrupt detection.
@@ -375,7 +344,7 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
         # floor to reject dead-silent frames that VAD sometimes marks as speech.
         ENERGY_FLOOR = 0.0015  # frames below this are always non-speech
         MIN_UTT_RMS = 0.004    # reject whole utterances too quiet for STT to parse
-        ECHO_MUTE_FRAMES = 17  # frames (~500ms) to discard after playback ends
+        ECHO_MUTE_FRAMES = 3   # frames (~100ms) to discard after playback ends (reduced for faster turn-taking)
 
         vad = webrtcvad.Vad(settings.vad_aggressiveness)
         raw_q: _queue.Queue[np.ndarray] = _queue.Queue()
@@ -418,10 +387,12 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                 # Falling edge: playback just ended → arm echo mute window
                 if was_playing and not playing_now:
                     echo_mute = ECHO_MUTE_FRAMES
+                    # Clear any partial recording to avoid processing echo
                     triggered = False
                     collecting = []
                     total_frames = 0
                     trailing_silence = 0
+                    log.debug("mic: playback ended, echo mute armed for %dms", ECHO_MUTE_FRAMES * frame_ms)
                 was_playing = playing_now
 
                 # Discard all mic input while Jarvis is playing — he hears himself
@@ -463,10 +434,11 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                         collecting = []
                         total_frames = 0
                         trailing_silence = 0
-                        if utt_rms >= MIN_UTT_RMS:
+                        # Skip STT on very short or quiet utterances (likely noise/echo)
+                        if utt_rms >= MIN_UTT_RMS and dur_ms >= 500:
                             await _captured.put(pcm)
                         else:
-                            log.info("mic: dropped utterance (too quiet rms=%.4f)", utt_rms)
+                            log.info("mic: dropped utterance (too quiet rms=%.4f or too short %dms)", utt_rms, dur_ms)
                 else:
                     if is_speech:
                         triggered = True
@@ -540,12 +512,19 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
             if pcm.size == 0:
                 continue
 
-            text = await stt.transcribe(pcm, settings.sample_rate)
+            reset_timings()
+            turn_start = time.perf_counter()
+
+            with measure("1_STT"):
+                text = await stt.transcribe(pcm, settings.sample_rate)
             if not text:
                 continue
 
             text = text.strip()
-            console.print(f"[dim]you[/dim]: {text}")
+
+            # Get detected language for auto mode
+            detected_lang = stt.get_last_detected_language() if settings.stt_language == "auto" else settings.stt_language
+            console.print(f"[dim]you[/dim] [{detected_lang}]: {text}")
 
             if sleeping:
                 if _is_wake(text):
@@ -565,8 +544,13 @@ async def _voice_main(stream: bool | None, wake: bool | None) -> None:
                 continue
 
             console.print("[bold green]Jarvis[/]: ", end="")
-            reply = await _respond(text)
+            with measure("2_LLM+TTS_total"):
+                reply = await _respond(text, turn_start, detected_lang)
             console.print(reply)
+
+            turn_elapsed = (time.perf_counter() - turn_start) * 1000
+            log.info(f"⏱️  END-TO-END: {turn_elapsed:.0f}ms")
+            log_summary()
 
     finally:
         if keyboard_task:

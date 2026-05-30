@@ -74,6 +74,7 @@ async def run_turn(
     settings: Settings | None = None,
     toolbox: Toolbox | None = None,
     tts_callback=None,
+    detected_language: str = "en",
 ) -> tuple[str, list[dict[str, Any]]]:
     """Run one turn. Returns (response_text, updated_history)."""
     history = list(conversation_history or [])
@@ -93,6 +94,7 @@ async def run_turn(
         "settings": settings,
         "toolbox": toolbox,
         "tts_callback": tts_callback,
+        "detected_language": detected_language,
     }
 
     result = await compiled_graph.ainvoke(initial_state)

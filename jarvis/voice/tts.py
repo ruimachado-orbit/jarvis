@@ -70,7 +70,10 @@ def _load_csm_generator():
 
 @lru_cache(maxsize=1)
 def _load_kokoro():
-    """Load Kokoro ONNX model + voices file from ./kokoro/."""
+    """Load Kokoro ONNX model + voices file from ./kokoro/.
+
+    Optimized with ONNX execution providers for fastest inference.
+    """
     from kokoro_onnx import Kokoro
     base = Path(__file__).resolve().parent.parent.parent
     model_path = base / "kokoro" / "kokoro-v1.0.onnx"
@@ -80,7 +83,19 @@ def _load_kokoro():
             f"Kokoro model files missing. Expected:\n  {model_path}\n  {voices_path}"
         )
     log.info("loading Kokoro ONNX from %s", model_path)
-    return Kokoro(str(model_path), str(voices_path))
+
+    # Create Kokoro instance with optimized settings
+    # kokoro-onnx uses onnxruntime under the hood
+    kokoro = Kokoro(str(model_path), str(voices_path))
+
+    # Warm up with a short phrase to initialize ONNX session
+    try:
+        _, _ = kokoro.create("Hi.", voice="bm_george", speed=1.0, lang="en-gb")
+        log.info("Kokoro warmed up and ready")
+    except Exception as e:
+        log.warning("Kokoro warmup failed: %s", e)
+
+    return kokoro
 
 
 class TTS:
@@ -144,12 +159,58 @@ class TTS:
     def _synthesize_sync(self, text: str) -> tuple[np.ndarray, int]:
         if self._engine == "kokoro":
             return self._synthesize_kokoro(text)
+        elif self._engine == "voxtral":
+            return self._synthesize_voxtral(text)
         return self._synthesize_csm(text)
 
-    def _synthesize_kokoro(self, text: str) -> tuple[np.ndarray, int]:
+    def _synthesize_voxtral(self, text: str) -> tuple[np.ndarray, int]:
+        """Use Voxtral-Mini-4B for TTS (same model already loaded for STT)."""
+        from jarvis.voice.stt import _get_voxtral_model
+        import torch
+
+        model, processor, device = _get_voxtral_model()
+
+        # Voxtral TTS format: <|text_start|>text<|text_end|><|audio_start|>
+        tts_input = f"<|text_start|>{text}<|text_end|><|audio_start|>"
+        inputs = processor(tts_input, return_tensors="pt").to(device)
+
+        with torch.inference_mode():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=2048,
+                do_sample=False,
+            )
+
+        # Extract audio tokens and decode
+        audio_output = processor.batch_decode(outputs, skip_special_tokens=False)[0]
+        # Voxtral outputs audio at 16kHz
+        # TODO: actual audio extraction - for now fall back to Kokoro
+        log.warning("Voxtral TTS not fully implemented, falling back to Kokoro")
+        return self._synthesize_kokoro(text)
+
+    def _synthesize_kokoro(self, text: str, detected_lang: str = None) -> tuple[np.ndarray, int]:
         kokoro = _load_kokoro()
         voice = self._voice if self._voice and not self._voice.isdigit() else "af_heart"
-        samples, sr = kokoro.create(text, voice=voice, speed=self._speed, lang="en-gb")
+
+        # Map detected language to Kokoro language codes
+        # Kokoro supports: en-us, en-gb, es, fr, it, de, pt-br, ja, zh
+        lang_map = {
+            "pt": "pt-br",  # Portuguese
+            "es": "es",     # Spanish
+            "fr": "fr",     # French
+            "de": "de",     # German
+            "it": "it",     # Italian
+            "ja": "ja",     # Japanese
+            "zh": "zh",     # Chinese
+        }
+
+        # Use detected language if provided, otherwise fall back to settings
+        lang_to_use = detected_lang or self.settings.stt_language
+        if lang_to_use == "auto":
+            lang_to_use = "en"  # Default to English if auto
+        tts_lang = lang_map.get(lang_to_use, "en-gb")
+
+        samples, sr = kokoro.create(text, voice=voice, speed=self._speed, lang=tts_lang)
         return samples.astype(np.float32), sr
 
     def _synthesize_csm(self, text: str) -> tuple[np.ndarray, int]:

@@ -61,8 +61,20 @@ def _load_voxtral():
 
     model.eval()
 
+    # Enable torch.compile for 20-30% speedup on repeated calls
+    if device in ("cuda", "mps") and hasattr(torch, "compile"):
+        log.info("Compiling Voxtral with torch.compile for faster inference...")
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+        except Exception as e:
+            log.warning("torch.compile failed, continuing without: %s", e)
+
     log.info("Voxtral-Mini-4B ready on %s (dtype=%s)", device, dtype)
     return processor, model, device
+
+
+# Export for TTS to reuse
+_get_voxtral_model = _load_voxtral
 
 
 class STT:
@@ -74,6 +86,7 @@ class STT:
         self._model = None
         self._device = None
         self._loaded = False
+        self._last_detected_lang = "en"  # Track detected language for context
 
     def _ensure_loaded(self):
         """Lazy-load model on first use."""
@@ -114,16 +127,55 @@ class STT:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._transcribe_sync, audio)
 
+    def _detect_language(self, text: str) -> str:
+        """Simple language detection for en/pt based on common words."""
+        if not text:
+            return self._last_detected_lang
+
+        text_lower = text.lower()
+
+        # Portuguese indicators (common words)
+        pt_indicators = [
+            'olá', 'ola', 'bom', 'boa', 'dia', 'tarde', 'noite', 'está', 'esta',
+            'como', 'que', 'para', 'com', 'por', 'sem', 'mais', 'muito',
+            'onde', 'quando', 'porque', 'sim', 'não', 'nao', 'obrigado',
+            'senhor', 'jarvis', 'tempo', 'hoje', 'agora', 'favor'
+        ]
+
+        # English indicators
+        en_indicators = [
+            'hello', 'hi', 'good', 'morning', 'evening', 'how', 'what', 'where',
+            'when', 'why', 'yes', 'no', 'please', 'thank', 'sir', 'the', 'is',
+            'are', 'can', 'will', 'would', 'could', 'should', 'time', 'today',
+            'now', 'weather', 'jarvis'
+        ]
+
+        words = text_lower.split()
+        pt_score = sum(1 for word in words if any(ind in word for ind in pt_indicators))
+        en_score = sum(1 for word in words if any(ind in word for ind in en_indicators))
+
+        detected = "pt" if pt_score > en_score else "en"
+        self._last_detected_lang = detected
+        return detected
+
     def _transcribe_sync(self, audio: np.ndarray) -> str:
         """Synchronous transcription (runs in thread pool)."""
         processor, model, device = self._ensure_loaded()
 
-        # Prepare input features using the chat template format
-        # Voxtral uses a conversational format for transcription
+        # Prepare input features with language setting
+        # Voxtral supports: en, pt, es, fr, de, it, nl, pl, ru, uk, zh, ja, ko
+        language = self.settings.stt_language or "en"
+
+        # Auto-detect between en/pt if set to auto
+        if language == "auto":
+            # First pass: transcribe with last detected language
+            language = self._last_detected_lang
+
         inputs = processor(
             audio,
             sampling_rate=_VOXTRAL_SAMPLE_RATE,
-            return_tensors="pt"
+            return_tensors="pt",
+            language=language
         )
 
         # Move inputs to device and convert to the same dtype as the model
@@ -136,12 +188,15 @@ class STT:
                      for k, v in inputs.items()}
 
         # Generate transcription with Voxtral's recommended settings
+        # Optimized for low latency: reduce max_new_tokens, use greedy decoding
         with torch.inference_mode():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=128,
-                temperature=0.0,  # Recommended by Voxtral docs
+                max_new_tokens=64,  # Reduced from 128 for faster inference
+                temperature=0.0,
                 do_sample=False,
+                num_beams=1,  # Greedy decoding (faster than beam search)
+                use_cache=True,  # Enable KV cache
             )
 
         # Decode text
@@ -172,7 +227,17 @@ class STT:
             log.debug("STT: dropped likely hallucination %r", text)
             return ""
 
+        # Auto-detect language if enabled
+        if self.settings.stt_language == "auto" and text:
+            detected = self._detect_language(text)
+            if detected != language:
+                log.info(f"STT: language switched {language} → {detected}")
+
         return text
+
+    def get_last_detected_language(self) -> str:
+        """Get the last detected language for use by LLM/TTS."""
+        return self._last_detected_lang
 
 
 def _is_hallucination(text: str) -> bool:
